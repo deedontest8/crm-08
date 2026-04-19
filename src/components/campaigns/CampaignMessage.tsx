@@ -86,7 +86,7 @@ export function CampaignMessage({ campaignId, campaign, selectedRegions = [], au
   const [editLinkedinId, setEditLinkedinId] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [expandedScripts, setExpandedScripts] = useState<Set<string>>(new Set());
-  const [aiLoading, setAiLoading] = useState<string | null>(null);
+  const [aiWizardOpen, setAiWizardOpen] = useState(false);
 
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: string; id: string; name: string; filePath?: string } | null>(null);
 
@@ -98,38 +98,6 @@ export function CampaignMessage({ campaignId, campaign, selectedRegions = [], au
     accountCount: audienceCounts?.accounts || 0,
     contactCount: audienceCounts?.contacts || 0,
   });
-
-  const generateWithAI = async (templateType: "email" | "linkedin-connection" | "linkedin-followup" | "phone", userInstructions?: string) => {
-    setAiLoading(templateType);
-    try {
-      const { data, error } = await supabase.functions.invoke("generate-campaign-template", {
-        body: { templateType, campaignContext: buildAiContext(), userInstructions },
-      });
-      if (error) throw error;
-      if (!data?.success || !data?.result) throw new Error(data?.error || "AI generation failed");
-      const r = data.result;
-      if (templateType === "email") {
-        setEmailForm(prev => ({ ...prev, subject: r.subject || prev.subject, body: r.body || prev.body }));
-        toast({ title: "Email draft generated" });
-      } else if (templateType === "linkedin-connection" || templateType === "linkedin-followup") {
-        setLinkedinForm(prev => ({ ...prev, body: r.body || prev.body }));
-        toast({ title: "LinkedIn draft generated" });
-      } else if (templateType === "phone") {
-        setScriptForm(prev => ({
-          ...prev,
-          opening_script: r.opening_script || prev.opening_script,
-          talking_points: Array.isArray(r.talking_points) && r.talking_points.length > 0 ? r.talking_points : prev.talking_points,
-          questions: Array.isArray(r.discovery_questions) && r.discovery_questions.length > 0 ? r.discovery_questions : prev.questions,
-          objections: Array.isArray(r.objections) && r.objections.length > 0 ? r.objections : prev.objections,
-        }));
-        toast({ title: "Phone script generated" });
-      }
-    } catch (err: any) {
-      toast({ title: "AI generation failed", description: err.message || "Please try again", variant: "destructive" });
-    } finally {
-      setAiLoading(null);
-    }
-  };
 
   const { data: emailTemplates = [] } = useQuery({
     queryKey: ["campaign-email-templates", campaignId],
