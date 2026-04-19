@@ -123,10 +123,26 @@ export function CampaignRegion({ campaign }: Props) {
   const saveCard = () => {
     if (!form.region) return;
     const updated = [...regionCards];
-    if (editIndex !== null) { updated[editIndex] = form; } else { updated.push(form); }
+    if (editIndex !== null) {
+      updated[editIndex] = form;
+    } else {
+      // Prevent duplicate (same region + country)
+      const dup = updated.some(r => r.region === form.region && (r.country || "") === (form.country || ""));
+      if (dup) {
+        toast({ title: "Already added", description: `${form.region}${form.country ? ` — ${form.country}` : ""} is already in the list.`, variant: "destructive" });
+        return;
+      }
+      updated.push(form);
+    }
     setRegionCards(updated);
     setFormOpen(false);
     persistRegions(updated);
+  };
+
+  const openAddCountryToRegion = (regionName: string) => {
+    setForm({ region: regionName, country: "", timezone: "" });
+    setEditIndex(null);
+    setFormOpen(true);
   };
 
   const confirmDeleteCard = (i: number) => {
