@@ -1,10 +1,11 @@
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useCampaigns, type Campaign } from "@/hooks/useCampaigns";
-import { useState, useEffect, KeyboardEvent } from "react";
+import { useState, KeyboardEvent } from "react";
 import { Users, X } from "lucide-react";
 
 interface AudienceData {
@@ -24,7 +25,9 @@ function parseAudience(raw: string | null): AudienceData {
   if (!raw) return empty;
   try {
     const parsed = JSON.parse(raw);
+    // New format
     if (parsed.job_titles) return { ...empty, ...parsed };
+    // Legacy array format
     if (Array.isArray(parsed)) {
       const first = parsed[0] || {};
       return {
@@ -88,11 +91,6 @@ export function CampaignMARTAudience({ campaign }: Props) {
   const [data, setData] = useState<AudienceData>(() => parseAudience(campaign.target_audience));
   const [saving, setSaving] = useState(false);
 
-  // Sync state when campaign data changes externally
-  useEffect(() => {
-    setData(parseAudience(campaign.target_audience));
-  }, [campaign.target_audience]);
-
   const handleSave = () => {
     setSaving(true);
     updateCampaign.mutate(
@@ -103,6 +101,7 @@ export function CampaignMARTAudience({ campaign }: Props) {
 
   const hasContent = data.job_titles.length > 0 || data.departments.length > 0 || data.seniorities.length > 0 || data.industries.length > 0 || data.company_sizes.length > 0;
 
+  // Auto-generated summary
   const summaryParts: string[] = [];
   if (data.seniorities.length) summaryParts.push(data.seniorities.join(", "));
   if (data.industries.length) summaryParts.push(`in ${data.industries.join(", ")}`);
@@ -110,46 +109,46 @@ export function CampaignMARTAudience({ campaign }: Props) {
   const summary = summaryParts.length > 0 ? `Targeting ${summaryParts.join(" ")}` : "";
 
   return (
-    <div className="space-y-5">
-      <div className="flex items-center gap-2 mb-1">
-        <Users className="h-4 w-4" />
-        <h4 className="text-sm font-medium">Audience Targeting</h4>
-      </div>
-
-      <div className="space-y-2">
-        <Label className="text-sm">Job Titles <span className="text-xs text-muted-foreground">(type and press Enter)</span></Label>
-        <TagInput tags={data.job_titles} onChange={tags => setData({ ...data, job_titles: tags })} placeholder="e.g. CEO, VP of Sales..." />
-      </div>
-
-      <div className="space-y-2">
-        <Label className="text-sm">Departments</Label>
-        <MultiCheckbox options={DEPARTMENTS} selected={data.departments} onChange={deps => setData({ ...data, departments: deps })} />
-      </div>
-
-      <div className="space-y-2">
-        <Label className="text-sm">Seniority</Label>
-        <MultiCheckbox options={SENIORITIES} selected={data.seniorities} onChange={sens => setData({ ...data, seniorities: sens })} />
-      </div>
-
-      <div className="space-y-2">
-        <Label className="text-sm">Industries <span className="text-xs text-muted-foreground">(type and press Enter)</span></Label>
-        <TagInput tags={data.industries} onChange={tags => setData({ ...data, industries: tags })} placeholder="e.g. SaaS, FinTech..." />
-      </div>
-
-      <div className="space-y-2">
-        <Label className="text-sm">Company Sizes</Label>
-        <MultiCheckbox options={COMPANY_SIZES} selected={data.company_sizes} onChange={sizes => setData({ ...data, company_sizes: sizes })} />
-      </div>
-
-      {summary && (
-        <div className="p-3 bg-muted/50 rounded-lg">
-          <p className="text-sm text-muted-foreground italic">{summary}</p>
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base flex items-center gap-2"><Users className="h-4 w-4" /> Audience Targeting</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-5">
+        <div className="space-y-2">
+          <Label className="text-sm">Job Titles <span className="text-xs text-muted-foreground">(type and press Enter)</span></Label>
+          <TagInput tags={data.job_titles} onChange={tags => setData({ ...data, job_titles: tags })} placeholder="e.g. CEO, VP of Sales..." />
         </div>
-      )}
 
-      <Button onClick={handleSave} disabled={saving || !hasContent}>
-        {saving ? "Saving..." : "Save Audience"}
-      </Button>
-    </div>
+        <div className="space-y-2">
+          <Label className="text-sm">Departments</Label>
+          <MultiCheckbox options={DEPARTMENTS} selected={data.departments} onChange={deps => setData({ ...data, departments: deps })} />
+        </div>
+
+        <div className="space-y-2">
+          <Label className="text-sm">Seniority</Label>
+          <MultiCheckbox options={SENIORITIES} selected={data.seniorities} onChange={sens => setData({ ...data, seniorities: sens })} />
+        </div>
+
+        <div className="space-y-2">
+          <Label className="text-sm">Industries <span className="text-xs text-muted-foreground">(type and press Enter)</span></Label>
+          <TagInput tags={data.industries} onChange={tags => setData({ ...data, industries: tags })} placeholder="e.g. SaaS, FinTech..." />
+        </div>
+
+        <div className="space-y-2">
+          <Label className="text-sm">Company Sizes</Label>
+          <MultiCheckbox options={COMPANY_SIZES} selected={data.company_sizes} onChange={sizes => setData({ ...data, company_sizes: sizes })} />
+        </div>
+
+        {summary && (
+          <div className="p-3 bg-muted/50 rounded-lg">
+            <p className="text-sm text-muted-foreground italic">{summary}</p>
+          </div>
+        )}
+
+        <Button onClick={handleSave} disabled={saving || !hasContent}>
+          {saving ? "Saving..." : "Save Audience"}
+        </Button>
+      </CardContent>
+    </Card>
   );
 }

@@ -25,6 +25,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { useNavigate } from "react-router-dom";
 import { format } from "date-fns";
 import { useUserDisplayNames } from "@/hooks/useUserDisplayNames";
+import { expandRegionsForDb } from "@/utils/countryRegionMapping";
 
 interface Props {
   campaignId: string;
@@ -32,6 +33,8 @@ interface Props {
   campaignName?: string;
   campaignOwner?: string | null;
   endDate?: string | null;
+  compact?: boolean;
+  selectedRegions?: string[];
 }
 
 const statusColors: Record<string, string> = {
@@ -58,26 +61,11 @@ const linkedinStatusColors: Record<string, string> = {
   "Responded": "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400",
 };
 
-const stageRanks: Record<string, number> = {
-  "Not Contacted": 0, "Email Sent": 1, "Phone Contacted": 2,
-  "LinkedIn Contacted": 3, "Responded": 4, "Qualified": 5,
-};
+import { stageRanks, deriveAccountStatus, recomputeAccountStatus } from "./campaignUtils";
 
-function deriveAccountStatus(contacts: any[], accountId: string): string {
+function deriveAccountStatusForAccount(contacts: any[], accountId: string): string {
   const acContacts = contacts.filter((c: any) => c.account_id === accountId);
-  if (acContacts.length === 0) return "Not Contacted";
-  if (acContacts.some((c: any) => c.stage === "Qualified")) return "Deal Created";
-  if (acContacts.some((c: any) => c.stage === "Responded")) return "Responded";
-  if (acContacts.some((c: any) => c.stage !== "Not Contacted")) return "Contacted";
-  return "Not Contacted";
-}
-
-async function recomputeAccountStatus(campaignId: string, accountId: string, queryClient: any) {
-  const { data: contacts } = await supabase.from("campaign_contacts")
-    .select("stage").eq("campaign_id", campaignId).eq("account_id", accountId);
-  const status = deriveAccountStatus(contacts || [], accountId);
-  await supabase.from("campaign_accounts").update({ status }).eq("campaign_id", campaignId).eq("account_id", accountId);
-  queryClient.invalidateQueries({ queryKey: ["campaign-accounts", campaignId] });
+  return deriveAccountStatus(acContacts);
 }
 
 /** Fetch all records from contacts table using paginated batches */
@@ -98,7 +86,7 @@ async function fetchAllContacts() {
   return allData;
 }
 
-export function CampaignAccountsContacts({ campaignId, isCampaignEnded, campaignName, campaignOwner, endDate }: Props) {
+export function CampaignAccountsContacts({ campaignId, isCampaignEnded, campaignName, campaignOwner, endDate, compact = false, selectedRegions = [] }: Props) {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -197,18 +185,20 @@ export function CampaignAccountsContacts({ campaignId, isCampaignEnded, campaign
     },
   });
 
-  // All accounts for add modal
+  // All accounts for add modal — server-side filter by selectedRegions when provided
   const { data: allAccounts = [] } = useQuery({
-    queryKey: ["all-accounts"],
+    queryKey: ["all-accounts", selectedRegions.join(",")],
     queryFn: async () => {
-      const { data, error } = await supabase.from("accounts").select("id, account_name, industry, region, country");
+      let q = supabase.from("accounts").select("id, account_name, industry, region, country");
+      if (selectedRegions.length > 0) q = q.in("region", expandRegionsForDb(selectedRegions));
+      const { data, error } = await q;
       if (error) throw error;
       return data;
     },
     enabled: addAccountModalOpen,
   });
 
-  // All contacts - paginated fetch
+  // All contacts - paginated fetch (filter client-side by linked-account region after fetch)
   const { data: allContacts = [] } = useQuery({
     queryKey: ["all-contacts-paginated"],
     queryFn: fetchAllContacts,
@@ -247,7 +237,7 @@ export function CampaignAccountsContacts({ campaignId, isCampaignEnded, campaign
 
   // ─── Account actions ───
   const filteredAccounts = campaignAccounts.filter((ca: any) => {
-    const derived = deriveAccountStatus(campaignContacts, ca.account_id);
+    const derived = deriveAccountStatusForAccount(campaignContacts, ca.account_id);
     if (statusFilter !== "all" && derived !== statusFilter) return false;
     if (searchTerm) {
       const name = ca.accounts?.account_name?.toLowerCase() || "";
@@ -412,7 +402,7 @@ export function CampaignAccountsContacts({ campaignId, isCampaignEnded, campaign
     }
     const regularTemplates = emailTemplates.filter((t) => t.email_type !== "LinkedIn-Connection" && t.email_type !== "LinkedIn-Followup");
     if (regularTemplates.length === 0) {
-      toast({ title: "No templates", description: "Add email templates in MART → Message first.", variant: "destructive" });
+      toast({ title: "No templates", description: "Add email templates in Setup → Message first.", variant: "destructive" });
       return;
     }
     setSlideContact(cc);
@@ -455,21 +445,38 @@ export function CampaignAccountsContacts({ campaignId, isCampaignEnded, campaign
 
   const handleSendEmail = async () => {
     if (!slideContact) return;
-    await supabase.from("campaign_communications").insert({
-      campaign_id: campaignId, contact_id: slideContact.contact_id, account_id: slideContact.account_id,
-      communication_type: "Email", subject: emailForm.subject, body: emailForm.body,
-      email_status: "Sent", owner: user!.id, created_by: user!.id,
-      communication_date: new Date().toISOString(),
-    });
-    const currentRank = stageRanks[slideContact.stage || "Not Contacted"] ?? 0;
-    if (1 > currentRank) {
-      await supabase.from("campaign_contacts").update({ stage: "Email Sent" }).eq("campaign_id", campaignId).eq("contact_id", slideContact.contact_id);
+    if (!slideContact.contacts?.email) {
+      toast({ title: "No email address", variant: "destructive" }); return;
     }
-    if (slideContact.account_id) await recomputeAccountStatus(campaignId, slideContact.account_id, queryClient);
-    queryClient.invalidateQueries({ queryKey: ["campaign-contacts", campaignId] });
-    queryClient.invalidateQueries({ queryKey: ["campaign-communications", campaignId] });
-    setEmailSlideOpen(false);
-    toast({ title: `Email sent to ${slideContact.contacts?.contact_name || "contact"}` });
+    try {
+      const { data, error } = await supabase.functions.invoke("send-campaign-email", {
+        body: {
+          campaign_id: campaignId,
+          contact_id: slideContact.contact_id,
+          account_id: slideContact.account_id || undefined,
+          template_id: emailForm.template_id || undefined,
+          subject: emailForm.subject,
+          body: emailForm.body,
+          recipient_email: slideContact.contacts.email,
+          recipient_name: slideContact.contacts.contact_name,
+        },
+      });
+      if (error) throw error;
+      if (!data?.success) {
+        toast({ title: "Email send failed", description: data?.error || "Unknown error", variant: "destructive" }); return;
+      }
+      const currentRank = stageRanks[slideContact.stage || "Not Contacted"] ?? 0;
+      if (1 > currentRank) {
+        await supabase.from("campaign_contacts").update({ stage: "Email Sent" }).eq("campaign_id", campaignId).eq("contact_id", slideContact.contact_id);
+      }
+      if (slideContact.account_id) await recomputeAccountStatus(campaignId, slideContact.account_id, queryClient);
+      queryClient.invalidateQueries({ queryKey: ["campaign-contacts", campaignId] });
+      queryClient.invalidateQueries({ queryKey: ["campaign-communications", campaignId] });
+      setEmailSlideOpen(false);
+      toast({ title: `Email sent to ${slideContact.contacts?.contact_name || "contact"}` });
+    } catch (err: any) {
+      toast({ title: "Error sending email", description: err.message, variant: "destructive" });
+    }
   };
 
   const handleLogCall = async (markResponded?: boolean) => {
@@ -701,7 +708,7 @@ export function CampaignAccountsContacts({ campaignId, isCampaignEnded, campaign
                 </TableHeader>
                 <TableBody>
                   {filteredAccounts.map((ca: any) => {
-                    const derived = deriveAccountStatus(campaignContacts, ca.account_id);
+                    const derived = deriveAccountStatusForAccount(campaignContacts, ca.account_id);
                     const accountContacts = getContactsForAccount(ca.account_id);
                     const isExpanded = expandedAccounts.has(ca.account_id);
                     return (

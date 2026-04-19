@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -7,14 +8,12 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Progress } from "@/components/ui/progress";
-import { Plus, Trash2, Mail, Phone, MessageSquare, Upload, FileText, Pencil, Download, X, Copy, CopyPlus } from "lucide-react";
+import { Plus, Trash2, Mail, Phone, MessageSquare, Upload, FileText, Pencil, Download, X } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { useQueryClient, useQuery } from "@tanstack/react-query";
 import { toast } from "@/hooks/use-toast";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 
 interface Props {
   campaignId: string;
@@ -84,9 +83,6 @@ export function CampaignMARTMessage({ campaignId }: Props) {
   const [editLinkedinId, setEditLinkedinId] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
 
-  // Delete confirmation state
-  const [deleteConfirm, setDeleteConfirm] = useState<{ type: string; id: string; name: string; filePath?: string } | null>(null);
-
   const { data: emailTemplates = [] } = useQuery({
     queryKey: ["campaign-email-templates", campaignId],
     queryFn: async () => {
@@ -117,11 +113,13 @@ export function CampaignMARTMessage({ campaignId }: Props) {
   const linkedinTemplates = emailTemplates.filter((t) => t.email_type === "LinkedIn-Connection" || t.email_type === "LinkedIn-Followup");
   const regularEmailTemplates = emailTemplates.filter((t) => t.email_type !== "LinkedIn-Connection" && t.email_type !== "LinkedIn-Followup");
 
-  // Email template form
+  // Email template form — signature stored in body after separator, segments as comma-separated audience_segment
   const [emailForm, setEmailForm] = useState({ template_name: "", subject: "", body: "", email_type: "Initial", audience_segment: [] as string[], signature: "" });
 
   const openEmailEdit = (t: any) => {
+    // Parse segments from comma-separated
     const segs = t.audience_segment ? t.audience_segment.split(",").map((s: string) => s.trim()).filter(Boolean) : [];
+    // Parse signature — stored as last line after "---SIGNATURE---"
     let body = t.body || "";
     let sig = "";
     const sigIdx = body.indexOf("---SIGNATURE---");
@@ -154,29 +152,9 @@ export function CampaignMARTMessage({ campaignId }: Props) {
     toast({ title: editEmailId ? "Template updated" : "Template saved" });
   };
 
-  const confirmDeleteEmailTemplate = (id: string, name: string) => {
-    setDeleteConfirm({ type: "email", id, name });
-  };
-
   const deleteEmailTemplate = async (id: string) => {
     await supabase.from("campaign_email_templates").delete().eq("id", id);
     queryClient.invalidateQueries({ queryKey: ["campaign-email-templates", campaignId] });
-  };
-
-  const duplicateEmailTemplate = async (t: any) => {
-    const payload = {
-      template_name: `${t.template_name} (Copy)`,
-      subject: t.subject,
-      body: t.body,
-      email_type: t.email_type,
-      audience_segment: t.audience_segment,
-      campaign_id: campaignId,
-      created_by: user!.id,
-    };
-    const { error } = await supabase.from("campaign_email_templates").insert(payload);
-    if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
-    queryClient.invalidateQueries({ queryKey: ["campaign-email-templates", campaignId] });
-    toast({ title: "Template duplicated" });
   };
 
   const toggleSegment = (seg: string) => {
@@ -186,37 +164,28 @@ export function CampaignMARTMessage({ campaignId }: Props) {
     }));
   };
 
-  // Phone script form — dynamic lists stored as JSON, audience_segment now multi-select
+  // Phone script form — dynamic lists stored as JSON
   const [scriptForm, setScriptForm] = useState({
     script_name: "", opening_script: "", talking_points: [] as string[],
-    questions: [] as string[], objections: [] as { objection: string; response: string }[], audience_segments: [] as string[],
+    questions: [] as string[], objections: [] as { objection: string; response: string }[], audience_segment: "",
   });
 
   const openScriptEdit = (s: any) => {
-    // Parse segments - support both comma-separated string and array
-    const segs = s.audience_segment ? s.audience_segment.split(",").map((seg: string) => seg.trim()).filter(Boolean) : [];
     setScriptForm({
       script_name: s.script_name || "", opening_script: s.opening_script || "",
       talking_points: parseJsonArray(s.key_talking_points),
       questions: parseJsonArray(s.discovery_questions),
       objections: parseObjectionArray(s.objection_handling),
-      audience_segments: segs,
+      audience_segment: s.audience_segment || "",
     });
     setEditScriptId(s.id);
     setScriptModalOpen(true);
   };
 
   const openScriptCreate = () => {
-    setScriptForm({ script_name: "", opening_script: "", talking_points: [""], questions: [""], objections: [{ objection: "", response: "" }], audience_segments: [] });
+    setScriptForm({ script_name: "", opening_script: "", talking_points: [""], questions: [""], objections: [{ objection: "", response: "" }], audience_segment: "" });
     setEditScriptId(null);
     setScriptModalOpen(true);
-  };
-
-  const toggleScriptSegment = (seg: string) => {
-    setScriptForm(prev => ({
-      ...prev,
-      audience_segments: prev.audience_segments.includes(seg) ? prev.audience_segments.filter(s => s !== seg) : [...prev.audience_segments, seg]
-    }));
   };
 
   const savePhoneScript = async () => {
@@ -225,7 +194,7 @@ export function CampaignMARTMessage({ campaignId }: Props) {
       key_talking_points: JSON.stringify(scriptForm.talking_points.filter(Boolean)),
       discovery_questions: JSON.stringify(scriptForm.questions.filter(Boolean)),
       objection_handling: JSON.stringify(scriptForm.objections.filter(o => o.objection || o.response)),
-      audience_segment: scriptForm.audience_segments.join(", ") || null,
+      audience_segment: scriptForm.audience_segment || null,
       campaign_id: campaignId, created_by: user!.id,
     };
     if (editScriptId) {
@@ -240,30 +209,9 @@ export function CampaignMARTMessage({ campaignId }: Props) {
     toast({ title: editScriptId ? "Script updated" : "Script saved" });
   };
 
-  const confirmDeletePhoneScript = (id: string, name: string) => {
-    setDeleteConfirm({ type: "script", id, name });
-  };
-
   const deletePhoneScript = async (id: string) => {
     await supabase.from("campaign_phone_scripts").delete().eq("id", id);
     queryClient.invalidateQueries({ queryKey: ["campaign-phone-scripts", campaignId] });
-  };
-
-  const duplicatePhoneScript = async (s: any) => {
-    const payload = {
-      script_name: `${s.script_name || "Script"} (Copy)`,
-      opening_script: s.opening_script,
-      key_talking_points: s.key_talking_points,
-      discovery_questions: s.discovery_questions,
-      objection_handling: s.objection_handling,
-      audience_segment: s.audience_segment,
-      campaign_id: campaignId,
-      created_by: user!.id,
-    };
-    const { error } = await supabase.from("campaign_phone_scripts").insert(payload);
-    if (error) { toast({ title: "Error", description: error.message, variant: "destructive" }); return; }
-    queryClient.invalidateQueries({ queryKey: ["campaign-phone-scripts", campaignId] });
-    toast({ title: "Script duplicated" });
   };
 
   // LinkedIn template form with char counter
@@ -299,11 +247,6 @@ export function CampaignMARTMessage({ campaignId }: Props) {
     toast({ title: editLinkedinId ? "Template updated" : "Template saved" });
   };
 
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
-    toast({ title: "Copied to clipboard" });
-  };
-
   // Materials
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -325,10 +268,6 @@ export function CampaignMARTMessage({ campaignId }: Props) {
     e.target.value = "";
   };
 
-  const confirmDeleteMaterial = (id: string, name: string, filePath: string) => {
-    setDeleteConfirm({ type: "material", id, name, filePath });
-  };
-
   const deleteMaterial = async (id: string, filePath: string) => {
     await supabase.storage.from("campaign-materials").remove([filePath]);
     await supabase.from("campaign_materials").delete().eq("id", id);
@@ -345,220 +284,168 @@ export function CampaignMARTMessage({ campaignId }: Props) {
     queryClient.invalidateQueries({ queryKey: ["campaign-materials", campaignId] });
   };
 
-  const handleDeleteConfirm = async () => {
-    if (!deleteConfirm) return;
-    switch (deleteConfirm.type) {
-      case "email":
-      case "linkedin":
-        await deleteEmailTemplate(deleteConfirm.id);
-        break;
-      case "script":
-        await deletePhoneScript(deleteConfirm.id);
-        break;
-      case "material":
-        await deleteMaterial(deleteConfirm.id, deleteConfirm.filePath || "");
-        break;
-    }
-    setDeleteConfirm(null);
-    toast({ title: "Deleted successfully" });
-  };
-
   const MATERIAL_TYPES = ["One Pager", "Presentation", "Case Study", "Brochure", "Other"];
 
   return (
     <div className="space-y-6">
       {/* Email Templates */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h4 className="text-sm font-medium flex items-center gap-2"><Mail className="h-4 w-4" /> Email Templates <Badge variant="secondary" className="text-xs">{regularEmailTemplates.length}</Badge></h4>
-          <Button size="sm" variant="outline" onClick={openEmailCreate}><Plus className="h-4 w-4 mr-1" /> Add Template</Button>
-        </div>
-        {regularEmailTemplates.length === 0 ? (
-          <p className="text-sm text-muted-foreground py-2">No email templates yet. Add one to complete the Message component.</p>
-        ) : (
-          <div className="space-y-2">
-            {regularEmailTemplates.map((t) => {
-              let displayBody = t.body || "";
-              const sigIdx = displayBody.indexOf("---SIGNATURE---");
-              if (sigIdx !== -1) displayBody = displayBody.substring(0, sigIdx).trim();
-              const segs = t.audience_segment ? t.audience_segment.split(",").map((s: string) => s.trim()) : [];
-              return (
-                <div key={t.id} className="border border-border rounded-lg p-3">
-                  <div className="flex items-center justify-between mb-1">
-                    <div className="flex items-center gap-2 min-w-0">
-                      <Badge variant="secondary" className="text-xs shrink-0">{t.email_type || "Initial"}</Badge>
-                      <span className="font-medium text-sm truncate">{t.template_name}</span>
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle className="text-base flex items-center gap-2"><Mail className="h-4 w-4" /> Email Templates</CardTitle>
+          <Button size="sm" onClick={openEmailCreate}><Plus className="h-4 w-4 mr-1" /> Add Template</Button>
+        </CardHeader>
+        <CardContent>
+          {regularEmailTemplates.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No email templates yet. Add one to complete the Message component.</p>
+          ) : (
+            <div className="space-y-3">
+              {regularEmailTemplates.map((t) => {
+                let displayBody = t.body || "";
+                const sigIdx = displayBody.indexOf("---SIGNATURE---");
+                if (sigIdx !== -1) displayBody = displayBody.substring(0, sigIdx).trim();
+                const segs = t.audience_segment ? t.audience_segment.split(",").map((s: string) => s.trim()) : [];
+                return (
+                  <div key={t.id} className="border border-border rounded-lg p-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <Badge variant="secondary">{t.email_type || "Initial"}</Badge>
+                        <span className="font-medium text-sm">{t.subject}</span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEmailEdit(t)}><Pencil className="h-3.5 w-3.5" /></Button>
+                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => deleteEmailTemplate(t.id)}><Trash2 className="h-3.5 w-3.5 text-muted-foreground" /></Button>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-0.5 shrink-0">
-                      <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => duplicateEmailTemplate(t)} title="Duplicate"><CopyPlus className="h-3.5 w-3.5" /></Button>
-                      <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEmailEdit(t)}><Pencil className="h-3.5 w-3.5" /></Button>
-                      <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => confirmDeleteEmailTemplate(t.id, t.template_name)}><Trash2 className="h-3.5 w-3.5 text-muted-foreground" /></Button>
-                    </div>
+                    <p className="text-sm text-muted-foreground line-clamp-2">{displayBody}</p>
+                    {segs.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-2">
+                        {segs.map(s => <Badge key={s} variant="outline" className="text-xs">{s}</Badge>)}
+                      </div>
+                    )}
                   </div>
-                  <p className="text-xs text-muted-foreground mb-1">Subject: {t.subject}</p>
-                  <p className="text-xs text-muted-foreground line-clamp-2">{displayBody}</p>
-                  {segs.length > 0 && (
-                    <div className="flex flex-wrap gap-1 mt-1.5">
-                      {segs.map(s => <Badge key={s} variant="outline" className="text-[10px]">{s}</Badge>)}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      <hr className="border-border" />
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Call Scripts */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h4 className="text-sm font-medium flex items-center gap-2"><Phone className="h-4 w-4" /> Call Scripts <Badge variant="secondary" className="text-xs">{phoneScripts.length}</Badge></h4>
-          <Button size="sm" variant="outline" onClick={openScriptCreate}><Plus className="h-4 w-4 mr-1" /> Add Script</Button>
-        </div>
-        {phoneScripts.length === 0 ? (
-          <p className="text-sm text-muted-foreground py-2">No call scripts yet.</p>
-        ) : (
-          <div className="space-y-2">
-            {phoneScripts.map((s) => {
-              const points = parseJsonArray(s.key_talking_points);
-              const qs = parseJsonArray(s.discovery_questions);
-              const objs = parseObjectionArray(s.objection_handling);
-              const segs = s.audience_segment ? s.audience_segment.split(",").map((seg: string) => seg.trim()).filter(Boolean) : [];
-              return (
-                <div key={s.id} className="border border-border rounded-lg p-3">
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="font-medium text-sm">{s.script_name || "Script"}</span>
-                    <div className="flex items-center gap-0.5 shrink-0">
-                      <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => duplicatePhoneScript(s)} title="Duplicate"><CopyPlus className="h-3.5 w-3.5" /></Button>
-                      <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openScriptEdit(s)}><Pencil className="h-3.5 w-3.5" /></Button>
-                      <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => confirmDeletePhoneScript(s.id, s.script_name || "Script")}><Trash2 className="h-3.5 w-3.5 text-muted-foreground" /></Button>
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle className="text-base flex items-center gap-2"><Phone className="h-4 w-4" /> Call Scripts</CardTitle>
+          <Button size="sm" onClick={openScriptCreate}><Plus className="h-4 w-4 mr-1" /> Add Script</Button>
+        </CardHeader>
+        <CardContent>
+          {phoneScripts.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No call scripts yet.</p>
+          ) : (
+            <div className="space-y-3">
+              {phoneScripts.map((s) => {
+                const points = parseJsonArray(s.key_talking_points);
+                const qs = parseJsonArray(s.discovery_questions);
+                const objs = parseObjectionArray(s.objection_handling);
+                return (
+                  <div key={s.id} className="border border-border rounded-lg p-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="font-medium text-sm">{s.script_name || "Script"}</span>
+                      <div className="flex items-center gap-1">
+                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openScriptEdit(s)}><Pencil className="h-3.5 w-3.5" /></Button>
+                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => deletePhoneScript(s.id)}><Trash2 className="h-3.5 w-3.5 text-muted-foreground" /></Button>
+                      </div>
                     </div>
+                    {s.opening_script && <p className="text-sm text-muted-foreground mb-1">Opening: {s.opening_script}</p>}
+                    {points.length > 0 && <p className="text-xs text-muted-foreground">{points.length} talking point(s)</p>}
+                    {qs.length > 0 && <p className="text-xs text-muted-foreground">{qs.length} question(s)</p>}
+                    {objs.length > 0 && <p className="text-xs text-muted-foreground">{objs.length} objection(s)</p>}
                   </div>
-                  {s.opening_script && <p className="text-xs text-muted-foreground mb-1">Opening: {s.opening_script}</p>}
-                  <div className="flex gap-3 text-xs text-muted-foreground">
-                    {points.length > 0 && <span>{points.length} talking point(s)</span>}
-                    {qs.length > 0 && <span>{qs.length} question(s)</span>}
-                    {objs.length > 0 && <span>{objs.length} objection(s)</span>}
-                  </div>
-                  {segs.length > 0 && (
-                    <div className="flex flex-wrap gap-1 mt-1.5">
-                      {segs.map(seg => <Badge key={seg} variant="outline" className="text-[10px]">{seg}</Badge>)}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      <hr className="border-border" />
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* LinkedIn Messages */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h4 className="text-sm font-medium flex items-center gap-2"><MessageSquare className="h-4 w-4" /> LinkedIn Messages <Badge variant="secondary" className="text-xs">{linkedinTemplates.length}</Badge></h4>
-          <Button size="sm" variant="outline" onClick={openLinkedinCreate}><Plus className="h-4 w-4 mr-1" /> Add Template</Button>
-        </div>
-        {linkedinTemplates.length === 0 ? (
-          <p className="text-sm text-muted-foreground py-2">No LinkedIn message templates yet.</p>
-        ) : (
-          <div className="space-y-2">
-            {linkedinTemplates.map((t) => {
-              const maxChars = t.email_type === "LinkedIn-Connection" ? 300 : 1000;
-              const charCount = (t.body || "").length;
-              const charPercent = Math.min((charCount / maxChars) * 100, 100);
-              return (
-                <div key={t.id} className="border border-border rounded-lg p-3">
-                  <div className="flex items-center justify-between mb-1">
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle className="text-base flex items-center gap-2"><MessageSquare className="h-4 w-4" /> LinkedIn Messages</CardTitle>
+          <Button size="sm" onClick={openLinkedinCreate}><Plus className="h-4 w-4 mr-1" /> Add Template</Button>
+        </CardHeader>
+        <CardContent>
+          {linkedinTemplates.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No LinkedIn message templates yet.</p>
+          ) : (
+            <div className="space-y-3">
+              {linkedinTemplates.map((t) => (
+                <div key={t.id} className="border border-border rounded-lg p-4">
+                  <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
-                      <Badge variant="secondary" className="text-xs">{t.email_type === "LinkedIn-Connection" ? "Connection" : "Follow-up"}</Badge>
+                      <Badge variant="secondary">{t.email_type === "LinkedIn-Connection" ? "Connection Request" : "Follow-up"}</Badge>
                       <span className="font-medium text-sm">{t.template_name}</span>
                     </div>
-                    <div className="flex items-center gap-0.5 shrink-0">
-                      <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => copyToClipboard(t.body || "")} title="Copy to clipboard"><Copy className="h-3.5 w-3.5" /></Button>
+                    <div className="flex items-center gap-1">
                       <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openLinkedinEdit(t)}><Pencil className="h-3.5 w-3.5" /></Button>
-                      <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => confirmDeleteEmailTemplate(t.id, t.template_name)}><Trash2 className="h-3.5 w-3.5 text-muted-foreground" /></Button>
+                      <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => deleteEmailTemplate(t.id)}><Trash2 className="h-3.5 w-3.5 text-muted-foreground" /></Button>
                     </div>
                   </div>
-                  <p className="text-xs text-muted-foreground line-clamp-2">{t.body}</p>
-                  <div className="mt-1.5 flex items-center gap-2">
-                    <Progress value={charPercent} className="h-1.5 flex-1" />
-                    <span className={`text-[10px] ${charCount > maxChars ? "text-destructive font-medium" : "text-muted-foreground"}`}>
-                      {charCount}/{maxChars}
-                    </span>
-                  </div>
+                  <p className="text-sm text-muted-foreground line-clamp-2">{t.body}</p>
+                  <p className="text-xs text-muted-foreground mt-1">{(t.body || "").length} / {t.email_type === "LinkedIn-Connection" ? 300 : 1000} chars</p>
                 </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      <hr className="border-border" />
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Marketing Materials */}
-      <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h4 className="text-sm font-medium flex items-center gap-2"><FileText className="h-4 w-4" /> Marketing Materials <Badge variant="secondary" className="text-xs">{materials.length}</Badge></h4>
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle className="text-base flex items-center gap-2"><FileText className="h-4 w-4" /> Marketing Materials</CardTitle>
           <div>
             <input type="file" id="material-upload" className="hidden" multiple onChange={handleFileUpload} accept=".pdf,.pptx,.ppt,.doc,.docx,.png,.jpg,.jpeg" />
-            <Button size="sm" variant="outline" onClick={() => document.getElementById("material-upload")?.click()} disabled={uploading}>
+            <Button size="sm" onClick={() => document.getElementById("material-upload")?.click()} disabled={uploading}>
               <Upload className="h-4 w-4 mr-1" /> {uploading ? "Uploading..." : "Upload"}
             </Button>
           </div>
-        </div>
-        {materials.length === 0 ? (
-          <p className="text-sm text-muted-foreground py-2">No marketing materials uploaded.</p>
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead className="w-[100px]">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {materials.map((m) => (
-                <TableRow key={m.id}>
-                  <TableCell className="font-medium text-sm">{m.file_name}</TableCell>
-                  <TableCell>
-                    <Select value={m.file_type || "Other"} onValueChange={(v) => updateMaterialType(m.id, v)}>
-                      <SelectTrigger className="h-7 w-[130px] text-xs"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        {MATERIAL_TYPES.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
-                      </SelectContent>
-                    </Select>
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex gap-1">
-                      <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => downloadMaterial(m.file_path, m.file_name)}><Download className="h-3.5 w-3.5" /></Button>
-                      <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => confirmDeleteMaterial(m.id, m.file_name, m.file_path)}><Trash2 className="h-3.5 w-3.5 text-muted-foreground" /></Button>
-                    </div>
-                  </TableCell>
+        </CardHeader>
+        <CardContent>
+          {materials.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No marketing materials uploaded.</p>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Type</TableHead>
+                  <TableHead className="w-[100px]">Actions</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        )}
-      </div>
-
-      {/* Delete Confirmation Dialog */}
-      <AlertDialog open={!!deleteConfirm} onOpenChange={(open) => !open && setDeleteConfirm(null)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete "{deleteConfirm?.name}"?</AlertDialogTitle>
-            <AlertDialogDescription>This action cannot be undone. This will permanently delete this item.</AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleDeleteConfirm} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">Delete</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+              </TableHeader>
+              <TableBody>
+                {materials.map((m) => (
+                  <TableRow key={m.id}>
+                    <TableCell className="font-medium">{m.file_name}</TableCell>
+                    <TableCell>
+                      <Select value={m.file_type || "Other"} onValueChange={(v) => updateMaterialType(m.id, v)}>
+                        <SelectTrigger className="h-7 w-[130px] text-xs"><SelectValue /></SelectTrigger>
+                        <SelectContent>
+                          {MATERIAL_TYPES.map(t => <SelectItem key={t} value={t}>{t}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    </TableCell>
+                    <TableCell>
+                      <div className="flex gap-1">
+                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => downloadMaterial(m.file_path, m.file_name)}><Download className="h-3.5 w-3.5" /></Button>
+                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => deleteMaterial(m.id, m.file_path)}><Trash2 className="h-3.5 w-3.5 text-muted-foreground" /></Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Email Template Modal */}
       <Dialog open={emailModalOpen} onOpenChange={setEmailModalOpen}>
@@ -639,15 +526,8 @@ export function CampaignMARTMessage({ campaignId }: Props) {
               <ObjectionList items={scriptForm.objections} onChange={(items) => setScriptForm({ ...scriptForm, objections: items })} />
             </div>
             <div className="space-y-2">
-              <Label>Audience Segments</Label>
-              <div className="flex flex-wrap gap-2">
-                {SEGMENTS.map(seg => (
-                  <label key={seg} className="flex items-center gap-1.5 text-sm cursor-pointer">
-                    <Checkbox checked={scriptForm.audience_segments.includes(seg)} onCheckedChange={() => toggleScriptSegment(seg)} />
-                    {seg}
-                  </label>
-                ))}
-              </div>
+              <Label>Audience Segment</Label>
+              <Input value={scriptForm.audience_segment} onChange={(e) => setScriptForm({ ...scriptForm, audience_segment: e.target.value })} placeholder="e.g. Manager" />
             </div>
           </div>
           <DialogFooter>
@@ -679,12 +559,9 @@ export function CampaignMARTMessage({ campaignId }: Props) {
             <div className="space-y-2">
               <Label>Message *</Label>
               <Textarea value={linkedinForm.body} onChange={(e) => setLinkedinForm({ ...linkedinForm, body: e.target.value })} rows={5} placeholder="Write your LinkedIn message..." />
-              <div className="space-y-1">
-                <Progress value={Math.min((linkedinCharCount / linkedinMaxChars) * 100, 100)} className="h-1.5" />
-                <div className={`text-xs text-right ${linkedinOverLimit ? "text-destructive font-medium" : "text-muted-foreground"}`}>
-                  {linkedinCharCount} / {linkedinMaxChars} characters
-                  {linkedinOverLimit && " — Too long!"}
-                </div>
+              <div className={`text-xs text-right ${linkedinOverLimit ? "text-destructive font-medium" : "text-muted-foreground"}`}>
+                {linkedinCharCount} / {linkedinMaxChars} characters
+                {linkedinOverLimit && " — Too long!"}
               </div>
             </div>
           </div>

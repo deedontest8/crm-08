@@ -3,6 +3,30 @@
  * Covers 7 geographic regions, ~200 countries, and formatted timezones.
  */
 
+/**
+ * Map UI region names to all DB region codes that should match.
+ * The DB historically stores short codes like "EU", "ASIA", "US" alongside long names.
+ */
+export const REGION_DB_ALIASES: Record<string, string[]> = {
+  "Europe": ["EU", "Europe"],
+  "Asia": ["ASIA", "Asia"],
+  "Middle East": ["ASIA", "Middle East"],
+  "North America": ["US", "North America"],
+  "Africa": ["Africa", "Other"],
+  "Oceania": ["Oceania", "Other"],
+  "South America": ["South America", "Other"],
+};
+
+/** Expand a list of UI region names to all DB codes that should match. */
+export function expandRegionsForDb(regions: string[]): string[] {
+  const out = new Set<string>();
+  for (const r of regions) {
+    const aliases = REGION_DB_ALIASES[r] ?? [r];
+    for (const a of aliases) out.add(a);
+  }
+  return Array.from(out);
+}
+
 // Geographic regions
 export const regions = [
   "Africa",

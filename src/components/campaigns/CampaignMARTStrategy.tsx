@@ -1,10 +1,9 @@
-import { useState, useMemo } from "react";
+import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Progress } from "@/components/ui/progress";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { CheckCircle2, Circle, ChevronDown, ChevronRight, ChevronsUpDown, Mail, Phone, MessageSquare, FileText, Users, Globe, Clock } from "lucide-react";
+import { CheckCircle2, Circle, ChevronDown, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { useQueryClient } from "@tanstack/react-query";
@@ -22,36 +21,9 @@ interface Props {
   isCampaignEnded: boolean;
   daysRemaining: number | null;
   timingNotes?: string | null;
-  contentCounts?: {
-    emailTemplateCount: number;
-    phoneScriptCount: number;
-    linkedinTemplateCount: number;
-    materialCount: number;
-    regionCount: number;
-    hasAudienceData: boolean;
-  };
 }
 
-function parseAudienceHasContent(raw: string | null): boolean {
-  if (!raw) return false;
-  try {
-    const parsed = JSON.parse(raw);
-    if (parsed.job_titles?.length || parsed.departments?.length || parsed.seniorities?.length || parsed.industries?.length || parsed.company_sizes?.length) return true;
-    if (Array.isArray(parsed) && parsed.length > 0) return true;
-  } catch {}
-  return false;
-}
-
-function parseRegionCount(raw: string | null): number {
-  if (!raw) return 0;
-  try {
-    const arr = JSON.parse(raw);
-    if (Array.isArray(arr)) return arr.length;
-  } catch {}
-  return raw ? 1 : 0;
-}
-
-export function CampaignMARTStrategy({ campaignId, campaign, isMARTComplete, updateMartFlag, isCampaignEnded, daysRemaining, timingNotes, contentCounts }: Props) {
+export function CampaignMARTStrategy({ campaignId, campaign, isMARTComplete, updateMartFlag, isCampaignEnded, daysRemaining, timingNotes }: Props) {
   const queryClient = useQueryClient();
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
     message: true, audience: false, region: false, timing: false,
@@ -61,43 +33,7 @@ export function CampaignMARTStrategy({ campaignId, campaign, isMARTComplete, upd
     setOpenSections((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
-  const toggleAll = () => {
-    const allOpen = Object.values(openSections).every(Boolean);
-    const newState = { message: !allOpen, audience: !allOpen, region: !allOpen, timing: !allOpen };
-    setOpenSections(newState);
-  };
-
-  // Validation before marking done
-  const validateSection = (key: string): string | null => {
-    const counts = contentCounts;
-    switch (key) {
-      case "message":
-        if (counts && counts.emailTemplateCount === 0 && counts.phoneScriptCount === 0 && counts.linkedinTemplateCount === 0)
-          return "Add at least 1 email template, call script, or LinkedIn message before marking Message as done.";
-        return null;
-      case "audience":
-        if (!parseAudienceHasContent(campaign.target_audience))
-          return "Define at least one audience criteria (job titles, departments, etc.) before marking Audience as done.";
-        return null;
-      case "region":
-        if (parseRegionCount(campaign.region) === 0)
-          return "Add at least 1 region before marking Region as done.";
-        return null;
-      case "timing":
-        if (!campaign.start_date || !campaign.end_date)
-          return "Set campaign start and end dates before marking Timing as done.";
-        return null;
-      default:
-        return null;
-    }
-  };
-
-  const handleMarkDone = async (flag: string, label: string, key: string) => {
-    const validationError = validateSection(key);
-    if (validationError) {
-      toast.warning(validationError);
-      return;
-    }
+  const handleMarkDone = async (flag: string, label: string) => {
     await updateMartFlag(flag, true);
     toast.success(`${label} marked as done`);
   };
@@ -119,41 +55,6 @@ export function CampaignMARTStrategy({ campaignId, campaign, isMARTComplete, upd
     toast.success("Timing note saved");
   };
 
-  const completedCount = [isMARTComplete.message, isMARTComplete.audience, isMARTComplete.region, isMARTComplete.timing].filter(Boolean).length;
-  const progressPercent = (completedCount / 4) * 100;
-
-  // Content count summaries
-  const getContentSummary = (key: string): string => {
-    if (!contentCounts) return "";
-    switch (key) {
-      case "message": {
-        const parts: string[] = [];
-        if (contentCounts.emailTemplateCount > 0) parts.push(`${contentCounts.emailTemplateCount} email${contentCounts.emailTemplateCount > 1 ? "s" : ""}`);
-        if (contentCounts.phoneScriptCount > 0) parts.push(`${contentCounts.phoneScriptCount} script${contentCounts.phoneScriptCount > 1 ? "s" : ""}`);
-        if (contentCounts.linkedinTemplateCount > 0) parts.push(`${contentCounts.linkedinTemplateCount} LinkedIn`);
-        if (contentCounts.materialCount > 0) parts.push(`${contentCounts.materialCount} file${contentCounts.materialCount > 1 ? "s" : ""}`);
-        return parts.join(", ");
-      }
-      case "audience":
-        return contentCounts.hasAudienceData ? "Configured" : "Not configured";
-      case "region": {
-        const rc = parseRegionCount(campaign.region);
-        return rc > 0 ? `${rc} region${rc > 1 ? "s" : ""}` : "No regions";
-      }
-      case "timing":
-        return campaign.start_date && campaign.end_date ? `${campaign.start_date} → ${campaign.end_date}` : "Dates not set";
-      default:
-        return "";
-    }
-  };
-
-  const sectionIcons: Record<string, React.ReactNode> = {
-    message: <Mail className="h-4 w-4" />,
-    audience: <Users className="h-4 w-4" />,
-    region: <Globe className="h-4 w-4" />,
-    timing: <Clock className="h-4 w-4" />,
-  };
-
   const sections = [
     { key: "message", label: "Message", flag: "message_done", done: isMARTComplete.message },
     { key: "audience", label: "Audience", flag: "audience_done", done: isMARTComplete.audience },
@@ -163,33 +64,6 @@ export function CampaignMARTStrategy({ campaignId, campaign, isMARTComplete, upd
 
   return (
     <div className="space-y-4">
-      {/* Overall MART Progress */}
-      <Card>
-        <CardContent className="pt-4 pb-4">
-          <div className="flex items-center justify-between mb-2">
-            <div className="flex items-center gap-2">
-              <h3 className="font-semibold text-sm">MART Progress</h3>
-              <Badge variant={completedCount === 4 ? "default" : "secondary"} className="text-xs">
-                {completedCount}/4 Complete
-              </Badge>
-            </div>
-            <Button variant="ghost" size="sm" className="text-xs gap-1" onClick={toggleAll}>
-              <ChevronsUpDown className="h-3.5 w-3.5" />
-              {Object.values(openSections).every(Boolean) ? "Collapse All" : "Expand All"}
-            </Button>
-          </div>
-          <Progress value={progressPercent} className="h-2" />
-          <div className="flex gap-3 mt-2">
-            {sections.map((s) => (
-              <div key={s.key} className="flex items-center gap-1 text-xs text-muted-foreground">
-                {s.done ? <CheckCircle2 className="h-3 w-3 text-primary" /> : <Circle className="h-3 w-3" />}
-                {s.label}
-              </div>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
-
       {sections.map((section) => (
         <Card key={section.key}>
           <Collapsible open={openSections[section.key]} onOpenChange={() => toggleSection(section.key)}>
@@ -199,22 +73,14 @@ export function CampaignMARTStrategy({ campaignId, campaign, isMARTComplete, upd
                   <div className="flex items-center gap-2">
                     {openSections[section.key] ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                     {section.done ? <CheckCircle2 className="h-4 w-4 text-primary" /> : <Circle className="h-4 w-4 text-muted-foreground" />}
-                    {sectionIcons[section.key]}
                     <CardTitle className="text-base">{section.label}</CardTitle>
                     {section.done && <Badge variant="secondary" className="bg-primary/10 text-primary text-xs">Done</Badge>}
-                    {/* Content count summary */}
-                    {(() => {
-                      const summary = getContentSummary(section.key);
-                      return summary ? (
-                        <span className="text-xs text-muted-foreground ml-1">· {summary}</span>
-                      ) : null;
-                    })()}
                   </div>
                   <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                     {section.done ? (
                       <Button variant="ghost" size="sm" className="text-xs" onClick={() => handleUnmark(section.flag, section.label)}>Unmark</Button>
                     ) : (
-                      <Button size="sm" className="text-xs" onClick={() => handleMarkDone(section.flag, section.label, section.key)}>Save & Mark Done</Button>
+                      <Button size="sm" className="text-xs" onClick={() => handleMarkDone(section.flag, section.label)}>Save & Mark Done</Button>
                     )}
                   </div>
                 </div>
