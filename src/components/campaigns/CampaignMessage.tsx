@@ -386,6 +386,20 @@ export function CampaignMessage({ campaignId, campaign, selectedRegions = [], au
 
   return (
     <div className="space-y-4">
+      {/* AI-first entry point */}
+      <div className="flex items-center justify-between gap-2 border border-dashed border-primary/30 bg-primary/5 rounded-lg p-3">
+        <div className="flex items-start gap-2 min-w-0">
+          <Sparkles className="h-4 w-4 text-primary shrink-0 mt-0.5" />
+          <div className="min-w-0">
+            <p className="text-sm font-medium">Generate emails, LinkedIn messages & call scripts with AI</p>
+            <p className="text-[11px] text-muted-foreground">Uses your campaign goal, regions, and audience as context. Outputs include personalization placeholders so they auto-fill per recipient.</p>
+          </div>
+        </div>
+        <Button size="sm" className="h-8 gap-1.5 shrink-0" onClick={() => setAiWizardOpen(true)}>
+          <Wand2 className="h-3.5 w-3.5" /> Generate with AI
+        </Button>
+      </div>
+
       {/* Email Templates */}
       <div className="space-y-2">
         <div className="flex items-center justify-between">
