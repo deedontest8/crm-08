@@ -751,6 +751,14 @@ export function CampaignMessage({ campaignId, campaign, selectedRegions = [], au
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* AI Generate Wizard */}
+      <AIGenerateWizard
+        open={aiWizardOpen}
+        onOpenChange={setAiWizardOpen}
+        campaignId={campaignId}
+        campaignContext={buildAiContext()}
+      />
     </div>
   );
 }
