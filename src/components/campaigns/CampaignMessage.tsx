@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Progress } from "@/components/ui/progress";
-import { Plus, Trash2, Mail, Phone, MessageSquare, Upload, FileText, Pencil, Download, X, Copy, CopyPlus, ChevronDown, ChevronRight, Sparkles } from "lucide-react";
+import { Plus, Trash2, Mail, Phone, MessageSquare, Upload, FileText, Pencil, Download, X, Copy, CopyPlus, ChevronDown, ChevronRight, Sparkles, Wand2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { useQueryClient, useQuery } from "@tanstack/react-query";
@@ -86,7 +86,7 @@ export function CampaignMessage({ campaignId, campaign, selectedRegions = [], au
   const [editLinkedinId, setEditLinkedinId] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [expandedScripts, setExpandedScripts] = useState<Set<string>>(new Set());
-  const [aiLoading, setAiLoading] = useState<string | null>(null);
+  const [aiWizardOpen, setAiWizardOpen] = useState(false);
 
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: string; id: string; name: string; filePath?: string } | null>(null);
 
@@ -98,38 +98,6 @@ export function CampaignMessage({ campaignId, campaign, selectedRegions = [], au
     accountCount: audienceCounts?.accounts || 0,
     contactCount: audienceCounts?.contacts || 0,
   });
-
-  const generateWithAI = async (templateType: "email" | "linkedin-connection" | "linkedin-followup" | "phone", userInstructions?: string) => {
-    setAiLoading(templateType);
-    try {
-      const { data, error } = await supabase.functions.invoke("generate-campaign-template", {
-        body: { templateType, campaignContext: buildAiContext(), userInstructions },
-      });
-      if (error) throw error;
-      if (!data?.success || !data?.result) throw new Error(data?.error || "AI generation failed");
-      const r = data.result;
-      if (templateType === "email") {
-        setEmailForm(prev => ({ ...prev, subject: r.subject || prev.subject, body: r.body || prev.body }));
-        toast({ title: "Email draft generated" });
-      } else if (templateType === "linkedin-connection" || templateType === "linkedin-followup") {
-        setLinkedinForm(prev => ({ ...prev, body: r.body || prev.body }));
-        toast({ title: "LinkedIn draft generated" });
-      } else if (templateType === "phone") {
-        setScriptForm(prev => ({
-          ...prev,
-          opening_script: r.opening_script || prev.opening_script,
-          talking_points: Array.isArray(r.talking_points) && r.talking_points.length > 0 ? r.talking_points : prev.talking_points,
-          questions: Array.isArray(r.discovery_questions) && r.discovery_questions.length > 0 ? r.discovery_questions : prev.questions,
-          objections: Array.isArray(r.objections) && r.objections.length > 0 ? r.objections : prev.objections,
-        }));
-        toast({ title: "Phone script generated" });
-      }
-    } catch (err: any) {
-      toast({ title: "AI generation failed", description: err.message || "Please try again", variant: "destructive" });
-    } finally {
-      setAiLoading(null);
-    }
-  };
 
   const { data: emailTemplates = [] } = useQuery({
     queryKey: ["campaign-email-templates", campaignId],
@@ -418,6 +386,20 @@ export function CampaignMessage({ campaignId, campaign, selectedRegions = [], au
 
   return (
     <div className="space-y-4">
+      {/* AI-first entry point */}
+      <div className="flex items-center justify-between gap-2 border border-dashed border-primary/30 bg-primary/5 rounded-lg p-3">
+        <div className="flex items-start gap-2 min-w-0">
+          <Sparkles className="h-4 w-4 text-primary shrink-0 mt-0.5" />
+          <div className="min-w-0">
+            <p className="text-sm font-medium">Generate emails, LinkedIn messages & call scripts with AI</p>
+            <p className="text-[11px] text-muted-foreground">Uses your campaign goal, regions, and audience as context. Outputs include personalization placeholders so they auto-fill per recipient.</p>
+          </div>
+        </div>
+        <Button size="sm" className="h-8 gap-1.5 shrink-0" onClick={() => setAiWizardOpen(true)}>
+          <Wand2 className="h-3.5 w-3.5" /> Generate with AI
+        </Button>
+      </div>
+
       {/* Email Templates */}
       <div className="space-y-2">
         <div className="flex items-center justify-between">
@@ -691,23 +673,8 @@ export function CampaignMessage({ campaignId, campaign, selectedRegions = [], au
                 </Select>
               </div>
             </div>
-            <div className="space-y-2">
-              <Label>Assign to Segments</Label>
-              <div className="flex flex-wrap gap-2">
-                {SEGMENTS.map(seg => (
-                  <label key={seg} className="flex items-center gap-1.5 text-sm cursor-pointer">
-                    <Checkbox checked={emailForm.audience_segment.includes(seg)} onCheckedChange={() => toggleSegment(seg)} />
-                    {seg}
-                  </label>
-                ))}
-              </div>
-            </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" size="sm" onClick={() => generateWithAI("email")} disabled={aiLoading === "email"}>
-              {aiLoading === "email" ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Sparkles className="h-3.5 w-3.5 mr-1" />}
-              Generate with AI
-            </Button>
             <Button variant="outline" onClick={() => setEmailModalOpen(false)}>Cancel</Button>
             <Button onClick={saveEmailTemplate} disabled={!emailForm.template_name || !emailForm.subject || !emailForm.body}>Save</Button>
           </DialogFooter>
@@ -739,23 +706,8 @@ export function CampaignMessage({ campaignId, campaign, selectedRegions = [], au
               <Label>Objection Handling</Label>
               <ObjectionList items={scriptForm.objections} onChange={(items) => setScriptForm({ ...scriptForm, objections: items })} />
             </div>
-            <div className="space-y-2">
-              <Label>Audience Segments</Label>
-              <div className="flex flex-wrap gap-2">
-                {SEGMENTS.map(seg => (
-                  <label key={seg} className="flex items-center gap-1.5 text-sm cursor-pointer">
-                    <Checkbox checked={scriptForm.audience_segments.includes(seg)} onCheckedChange={() => toggleScriptSegment(seg)} />
-                    {seg}
-                  </label>
-                ))}
-              </div>
-            </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" size="sm" onClick={() => generateWithAI("phone")} disabled={aiLoading === "phone"}>
-              {aiLoading === "phone" ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Sparkles className="h-3.5 w-3.5 mr-1" />}
-              Generate with AI
-            </Button>
             <Button variant="outline" onClick={() => setScriptModalOpen(false)}>Cancel</Button>
             <Button onClick={savePhoneScript} disabled={!scriptForm.script_name}>Save</Button>
           </DialogFooter>
@@ -794,15 +746,19 @@ export function CampaignMessage({ campaignId, campaign, selectedRegions = [], au
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" size="sm" onClick={() => generateWithAI(linkedinForm.email_type === "LinkedIn-Connection" ? "linkedin-connection" : "linkedin-followup")} disabled={aiLoading?.startsWith("linkedin")}>
-              {aiLoading?.startsWith("linkedin") ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Sparkles className="h-3.5 w-3.5 mr-1" />}
-              Generate with AI
-            </Button>
             <Button variant="outline" onClick={() => setLinkedinModalOpen(false)}>Cancel</Button>
             <Button onClick={saveLinkedinTemplate} disabled={!linkedinForm.template_name || !linkedinForm.body || linkedinOverLimit}>Save</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* AI Generate Wizard */}
+      <AIGenerateWizard
+        open={aiWizardOpen}
+        onOpenChange={setAiWizardOpen}
+        campaignId={campaignId}
+        campaignContext={buildAiContext()}
+      />
     </div>
   );
 }

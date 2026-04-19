@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -6,17 +6,24 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { supabase } from "@/integrations/supabase/client";
 import { useQuery } from "@tanstack/react-query";
-import { Send, FileText, Eye } from "lucide-react";
+import { Send, FileText, Eye, Paperclip } from "lucide-react";
 import { toast } from "sonner";
-import { Alert, AlertDescription } from "@/components/ui/alert";
+import { useUserDisplayNames } from "@/hooks/useUserDisplayNames";
 
 interface Contact {
   contact_id: string;
   account_id: string | null;
-  contacts: { contact_name: string; email: string | null; company_name: string | null; position: string | null } | null;
+  contacts: {
+    contact_name: string;
+    email: string | null;
+    company_name: string | null;
+    position: string | null;
+    region?: string | null;
+  } | null;
 }
 
 interface Props {
@@ -29,14 +36,25 @@ interface Props {
   onEmailSent: (contactId?: string) => void;
 }
 
-function substituteVariables(text: string, contact: Contact): string {
+const MAX_TOTAL_ATTACHMENT_BYTES = 9 * 1024 * 1024; // ~9 MB safe ceiling under Graph 10 MB
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function substituteVariables(text: string, contact: Contact, ownerName: string, accountCountry?: string | null): string {
   const c = contact.contacts;
   return text
     .replace(/\{contact_name\}/gi, c?.contact_name || "")
     .replace(/\{first_name\}/gi, c?.contact_name?.split(" ")[0] || "")
     .replace(/\{company_name\}/gi, c?.company_name || "")
     .replace(/\{position\}/gi, c?.position || "")
-    .replace(/\{email\}/gi, c?.email || "");
+    .replace(/\{email\}/gi, c?.email || "")
+    .replace(/\{region\}/gi, c?.region || "")
+    .replace(/\{country\}/gi, accountCountry || "")
+    .replace(/\{owner_name\}/gi, ownerName || "");
 }
 
 export function EmailComposeModal({ open, onOpenChange, campaignId, contacts, preselectedContactId, replyTo, onEmailSent }: Props) {
@@ -46,6 +64,7 @@ export function EmailComposeModal({ open, onOpenChange, campaignId, contacts, pr
   const [body, setBody] = useState("");
   const [sending, setSending] = useState(false);
   const [previewTab, setPreviewTab] = useState("edit");
+  const [selectedAttachmentIds, setSelectedAttachmentIds] = useState<string[]>([]);
 
   useEffect(() => {
     if (replyTo) {
@@ -56,6 +75,11 @@ export function EmailComposeModal({ open, onOpenChange, campaignId, contacts, pr
       setContactId(preselectedContactId);
     }
   }, [preselectedContactId, replyTo]);
+
+  // Reset attachments when modal closes
+  useEffect(() => {
+    if (!open) setSelectedAttachmentIds([]);
+  }, [open]);
 
   const { data: templates = [] } = useQuery({
     queryKey: ["campaign-email-templates", campaignId],
@@ -71,6 +95,49 @@ export function EmailComposeModal({ open, onOpenChange, campaignId, contacts, pr
     enabled: open,
   });
 
+  const { data: campaignData } = useQuery({
+    queryKey: ["campaign-owner-meta", campaignId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("campaigns")
+        .select("owner")
+        .eq("id", campaignId)
+        .maybeSingle();
+      if (error) throw error;
+      return data;
+    },
+    enabled: open,
+  });
+
+  const ownerIds = campaignData?.owner ? [campaignData.owner] : [];
+  const { displayNames } = useUserDisplayNames(ownerIds);
+  const ownerName = campaignData?.owner ? displayNames[campaignData.owner] || "" : "";
+
+  const { data: materials = [] } = useQuery({
+    queryKey: ["campaign-materials", campaignId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("campaign_materials")
+        .select("id, file_name, file_path, file_type")
+        .eq("campaign_id", campaignId);
+      if (error) throw error;
+      return data;
+    },
+    enabled: open,
+  });
+
+  // Get the country of the selected contact's account (contacts table doesn't store country)
+  const { data: accountCountry } = useQuery({
+    queryKey: ["contact-account-country", contactId],
+    queryFn: async () => {
+      const c = contacts.find(x => x.contact_id === contactId);
+      if (!c?.account_id) return null;
+      const { data } = await supabase.from("accounts").select("country").eq("id", c.account_id).maybeSingle();
+      return data?.country || null;
+    },
+    enabled: !!contactId,
+  });
+
   const selectedContact = contacts.find(c => c.contact_id === contactId);
 
   const handleTemplateSelect = (tid: string) => {
@@ -84,8 +151,19 @@ export function EmailComposeModal({ open, onOpenChange, campaignId, contacts, pr
 
   const getPreviewText = (text: string) => {
     if (!selectedContact) return text;
-    return substituteVariables(text, selectedContact);
+    return substituteVariables(text, selectedContact, ownerName, accountCountry);
   };
+
+  const toggleAttachment = (id: string) => {
+    setSelectedAttachmentIds(prev =>
+      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+    );
+  };
+
+  const selectedAttachments = useMemo(
+    () => materials.filter((m: any) => selectedAttachmentIds.includes(m.id)),
+    [materials, selectedAttachmentIds]
+  );
 
   const handleSend = async () => {
     if (!contactId) { toast.warning("Select a contact"); return; }
@@ -98,6 +176,11 @@ export function EmailComposeModal({ open, onOpenChange, campaignId, contacts, pr
       const finalSubject = getPreviewText(subject);
       const finalBody = getPreviewText(body);
 
+      const attachmentsPayload = selectedAttachments.map((m: any) => ({
+        file_path: m.file_path,
+        file_name: m.file_name,
+      }));
+
       const { data, error } = await supabase.functions.invoke("send-campaign-email", {
         body: {
           campaign_id: campaignId,
@@ -108,6 +191,7 @@ export function EmailComposeModal({ open, onOpenChange, campaignId, contacts, pr
           body: finalBody,
           recipient_email: selectedContact.contacts.email,
           recipient_name: selectedContact.contacts.contact_name,
+          attachments: attachmentsPayload.length > 0 ? attachmentsPayload : undefined,
           ...(replyTo ? { parent_id: replyTo.parent_id, thread_id: replyTo.thread_id || replyTo.parent_id } : {}),
         },
       });
@@ -123,6 +207,8 @@ export function EmailComposeModal({ open, onOpenChange, campaignId, contacts, pr
           ? "Email sending is not configured. Azure credentials are missing — contact your administrator."
           : data?.errorCode === "AUTH_FAILED"
           ? "Failed to authenticate with email provider. Check Azure credentials."
+          : data?.errorCode === "ATTACHMENT_ERROR"
+          ? data.error || "Attachment error."
           : `Failed to send email: ${data?.error || "Unknown error"}`;
         toast.error(errorDetail);
       }
@@ -139,6 +225,7 @@ export function EmailComposeModal({ open, onOpenChange, campaignId, contacts, pr
     setSubject("");
     setBody("");
     setPreviewTab("edit");
+    setSelectedAttachmentIds([]);
   };
 
   return (
@@ -193,12 +280,11 @@ export function EmailComposeModal({ open, onOpenChange, campaignId, contacts, pr
           </div>
 
           {/* Variable hints */}
-          <div className="flex flex-wrap gap-1">
+          <div className="flex flex-wrap gap-1 items-center">
             <span className="text-[10px] text-muted-foreground">Variables:</span>
-          {["{contact_name}", "{first_name}", "{company_name}", "{position}", "{email}"].map(v => (
+            {["{first_name}", "{contact_name}", "{company_name}", "{position}", "{email}", "{region}", "{country}", "{owner_name}"].map(v => (
               <Badge key={v} variant="outline" className="text-[10px] px-1.5 py-0 cursor-pointer hover:bg-muted"
                 onClick={() => {
-                  // Append variable to body by default (most common use case)
                   setBody(prev => prev + v);
                 }}>
                 {v}
@@ -240,6 +326,39 @@ export function EmailComposeModal({ open, onOpenChange, campaignId, contacts, pr
               </div>
             </TabsContent>
           </Tabs>
+
+          {/* Attachments */}
+          {materials.length > 0 && (
+            <div className="space-y-1.5">
+              <Label className="text-xs flex items-center gap-1.5">
+                <Paperclip className="h-3 w-3" /> Attachments
+                {selectedAttachmentIds.length > 0 && (
+                  <Badge variant="secondary" className="text-[10px] px-1.5 py-0">
+                    {selectedAttachmentIds.length} selected
+                  </Badge>
+                )}
+              </Label>
+              <div className="border rounded-md divide-y max-h-[140px] overflow-y-auto">
+                {materials.map((m: any) => (
+                  <label
+                    key={m.id}
+                    className="flex items-center gap-2 px-2.5 py-1.5 hover:bg-muted/50 cursor-pointer text-sm"
+                  >
+                    <Checkbox
+                      checked={selectedAttachmentIds.includes(m.id)}
+                      onCheckedChange={() => toggleAttachment(m.id)}
+                    />
+                    <FileText className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                    <span className="flex-1 truncate text-xs">{m.file_name}</span>
+                    {m.file_type && (
+                      <Badge variant="outline" className="text-[10px] px-1 py-0 shrink-0">{m.file_type}</Badge>
+                    )}
+                  </label>
+                ))}
+              </div>
+              <p className="text-[10px] text-muted-foreground">Total attachment size limit: ~9 MB.</p>
+            </div>
+          )}
         </div>
 
         <DialogFooter>
