@@ -691,23 +691,8 @@ export function CampaignMessage({ campaignId, campaign, selectedRegions = [], au
                 </Select>
               </div>
             </div>
-            <div className="space-y-2">
-              <Label>Assign to Segments</Label>
-              <div className="flex flex-wrap gap-2">
-                {SEGMENTS.map(seg => (
-                  <label key={seg} className="flex items-center gap-1.5 text-sm cursor-pointer">
-                    <Checkbox checked={emailForm.audience_segment.includes(seg)} onCheckedChange={() => toggleSegment(seg)} />
-                    {seg}
-                  </label>
-                ))}
-              </div>
-            </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" size="sm" onClick={() => generateWithAI("email")} disabled={aiLoading === "email"}>
-              {aiLoading === "email" ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Sparkles className="h-3.5 w-3.5 mr-1" />}
-              Generate with AI
-            </Button>
             <Button variant="outline" onClick={() => setEmailModalOpen(false)}>Cancel</Button>
             <Button onClick={saveEmailTemplate} disabled={!emailForm.template_name || !emailForm.subject || !emailForm.body}>Save</Button>
           </DialogFooter>
@@ -739,23 +724,8 @@ export function CampaignMessage({ campaignId, campaign, selectedRegions = [], au
               <Label>Objection Handling</Label>
               <ObjectionList items={scriptForm.objections} onChange={(items) => setScriptForm({ ...scriptForm, objections: items })} />
             </div>
-            <div className="space-y-2">
-              <Label>Audience Segments</Label>
-              <div className="flex flex-wrap gap-2">
-                {SEGMENTS.map(seg => (
-                  <label key={seg} className="flex items-center gap-1.5 text-sm cursor-pointer">
-                    <Checkbox checked={scriptForm.audience_segments.includes(seg)} onCheckedChange={() => toggleScriptSegment(seg)} />
-                    {seg}
-                  </label>
-                ))}
-              </div>
-            </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" size="sm" onClick={() => generateWithAI("phone")} disabled={aiLoading === "phone"}>
-              {aiLoading === "phone" ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Sparkles className="h-3.5 w-3.5 mr-1" />}
-              Generate with AI
-            </Button>
             <Button variant="outline" onClick={() => setScriptModalOpen(false)}>Cancel</Button>
             <Button onClick={savePhoneScript} disabled={!scriptForm.script_name}>Save</Button>
           </DialogFooter>
@@ -794,10 +764,6 @@ export function CampaignMessage({ campaignId, campaign, selectedRegions = [], au
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" size="sm" onClick={() => generateWithAI(linkedinForm.email_type === "LinkedIn-Connection" ? "linkedin-connection" : "linkedin-followup")} disabled={aiLoading?.startsWith("linkedin")}>
-              {aiLoading?.startsWith("linkedin") ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <Sparkles className="h-3.5 w-3.5 mr-1" />}
-              Generate with AI
-            </Button>
             <Button variant="outline" onClick={() => setLinkedinModalOpen(false)}>Cancel</Button>
             <Button onClick={saveLinkedinTemplate} disabled={!linkedinForm.template_name || !linkedinForm.body || linkedinOverLimit}>Save</Button>
           </DialogFooter>
