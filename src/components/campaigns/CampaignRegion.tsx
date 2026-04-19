@@ -8,6 +8,7 @@ import { regions, countries, countryToRegion, getCountriesForRegion, getFormatte
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
+import { toast } from "@/hooks/use-toast";
 
 interface RegionCard {
   country: string;
@@ -123,10 +124,26 @@ export function CampaignRegion({ campaign }: Props) {
   const saveCard = () => {
     if (!form.region) return;
     const updated = [...regionCards];
-    if (editIndex !== null) { updated[editIndex] = form; } else { updated.push(form); }
+    if (editIndex !== null) {
+      updated[editIndex] = form;
+    } else {
+      // Prevent duplicate (same region + country)
+      const dup = updated.some(r => r.region === form.region && (r.country || "") === (form.country || ""));
+      if (dup) {
+        toast({ title: "Already added", description: `${form.region}${form.country ? ` — ${form.country}` : ""} is already in the list.`, variant: "destructive" });
+        return;
+      }
+      updated.push(form);
+    }
     setRegionCards(updated);
     setFormOpen(false);
     persistRegions(updated);
+  };
+
+  const openAddCountryToRegion = (regionName: string) => {
+    setForm({ region: regionName, country: "", timezone: "" });
+    setEditIndex(null);
+    setFormOpen(true);
   };
 
   const confirmDeleteCard = (i: number) => {
@@ -172,17 +189,31 @@ export function CampaignRegion({ campaign }: Props) {
         <p className="text-sm text-muted-foreground">No regions defined yet. Add regions to specify geographic targeting.</p>
       )}
 
-      <div className="flex flex-wrap gap-3">
-        {regionCards.map((r, i) => (
-          <div key={i} className="border border-border rounded-lg p-3 space-y-1 flex-1 min-w-[220px]">
+      <div className="space-y-3">
+        {Object.entries(
+          regionCards.reduce<Record<string, { card: RegionCard; index: number }[]>>((acc, card, idx) => {
+            const key = card.region || "(no region)";
+            (acc[key] ||= []).push({ card, index: idx });
+            return acc;
+          }, {})
+        ).map(([regionName, group]) => (
+          <div key={regionName} className="border border-border rounded-lg p-3 space-y-2">
             <div className="flex items-center justify-between">
-              <span className="font-medium text-sm">{r.region}{r.country ? ` — ${r.country}` : ""}</span>
-              <div className="flex items-center gap-1">
-                <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openEdit(i)}><Pencil className="h-3.5 w-3.5" /></Button>
-                <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => confirmDeleteCard(i)}><Trash2 className="h-3.5 w-3.5 text-muted-foreground" /></Button>
-              </div>
+              <span className="font-medium text-sm flex items-center gap-2"><Globe className="h-4 w-4 text-primary" />{regionName}</span>
+              <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => openAddCountryToRegion(regionName)}>
+                <Plus className="h-3.5 w-3.5 mr-1" /> Add country
+              </Button>
             </div>
-            {r.timezone && <p className="text-xs text-muted-foreground">{getTimezoneDisplay(r.timezone)}</p>}
+            <div className="flex flex-wrap gap-2">
+              {group.map(({ card, index }) => (
+                <div key={index} className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-muted/50 border border-border text-xs">
+                  <span className="font-medium">{card.country || "—"}</span>
+                  {card.timezone && <span className="text-muted-foreground">· {getTimezoneDisplay(card.timezone)}</span>}
+                  <Button variant="ghost" size="icon" className="h-5 w-5 ml-0.5" onClick={() => openEdit(index)}><Pencil className="h-3 w-3" /></Button>
+                  <Button variant="ghost" size="icon" className="h-5 w-5" onClick={() => confirmDeleteCard(index)}><Trash2 className="h-3 w-3 text-muted-foreground" /></Button>
+                </div>
+              ))}
+            </div>
           </div>
         ))}
       </div>
