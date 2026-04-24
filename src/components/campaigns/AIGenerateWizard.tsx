@@ -6,14 +6,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Sparkles, Loader2, Mail, Linkedin, Phone, MessageSquare, ArrowLeft, Check, X, RefreshCw } from "lucide-react";
+import { Sparkles, Loader2, Mail, Linkedin, Phone, ArrowLeft, Check, X, RefreshCw } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "@/hooks/use-toast";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
-type AiKind = "email" | "linkedin-connection" | "linkedin-followup" | "phone";
+type AiKind = "email" | "linkedin-connection" | "phone";
 
 interface Props {
   open: boolean;
@@ -35,14 +35,12 @@ interface Props {
 const KIND_OPTIONS: { id: AiKind; label: string; icon: typeof Mail }[] = [
   { id: "email", label: "Email", icon: Mail },
   { id: "linkedin-connection", label: "LinkedIn Connection", icon: Linkedin },
-  { id: "linkedin-followup", label: "LinkedIn Follow-up", icon: MessageSquare },
   { id: "phone", label: "Call Script", icon: Phone },
 ];
 
 const KIND_LABEL: Record<AiKind, string> = {
   email: "Email",
   "linkedin-connection": "LinkedIn Connection",
-  "linkedin-followup": "LinkedIn Follow-up",
   phone: "Call Script",
 };
 
@@ -65,7 +63,7 @@ export function AIGenerateWizard({ open, onOpenChange, campaignId, campaignConte
 
   const [step, setStep] = useState<"form" | "preview">("form");
   const [selected, setSelected] = useState<Record<AiKind, boolean>>({
-    email: true, "linkedin-connection": false, "linkedin-followup": false, phone: false,
+    email: true, "linkedin-connection": false, phone: false,
   });
   const [context, setContext] = useState("");
   const [tone, setTone] = useState("Professional");
@@ -79,7 +77,7 @@ export function AIGenerateWizard({ open, onOpenChange, campaignId, campaignConte
 
   const reset = () => {
     setStep("form");
-    setSelected({ email: true, "linkedin-connection": false, "linkedin-followup": false, phone: false });
+    setSelected({ email: true, "linkedin-connection": false, phone: false });
     setContext("");
     setTone("Professional");
     setLength("Short");
@@ -151,14 +149,6 @@ export function AIGenerateWizard({ open, onOpenChange, campaignId, campaignConte
         template_name: `AI – LinkedIn Conn – ${nameSuffix}`,
         body: result.body || "",
         email_type: "LinkedIn-Connection",
-        campaign_id: campaignId,
-        created_by: user!.id,
-      });
-    } else if (kind === "linkedin-followup") {
-      await supabase.from("campaign_email_templates").insert({
-        template_name: `AI – LinkedIn FU – ${nameSuffix}`,
-        body: result.body || "",
-        email_type: "LinkedIn-Followup",
         campaign_id: campaignId,
         created_by: user!.id,
       });
@@ -297,12 +287,12 @@ export function AIGenerateWizard({ open, onOpenChange, campaignId, campaignConte
                     </div>
                   )}
 
-                  {item.result && (item.kind === "linkedin-connection" || item.kind === "linkedin-followup") && (
+                  {item.result && item.kind === "linkedin-connection" && (
                     <div>
                       <Label className="text-[11px] text-muted-foreground">
-                        Message ({(item.result.body || "").length} / {item.kind === "linkedin-connection" ? 300 : 1000})
+                        Message ({(item.result.body || "").length} / 300)
                       </Label>
-                      <Textarea value={item.result.body || ""} onChange={(e) => updatePreview(idx, { body: e.target.value })} rows={item.kind === "linkedin-connection" ? 4 : 6} className="text-sm" />
+                      <Textarea value={item.result.body || ""} onChange={(e) => updatePreview(idx, { body: e.target.value })} rows={4} className="text-sm" />
                     </div>
                   )}
 

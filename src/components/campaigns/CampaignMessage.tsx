@@ -7,7 +7,10 @@ import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Progress } from "@/components/ui/progress";
-import { Plus, Trash2, Mail, Phone, MessageSquare, Upload, FileText, Pencil, Download, X, Copy, CopyPlus, ChevronDown, ChevronRight, Sparkles, Wand2 } from "lucide-react";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Plus, Trash2, Mail, Phone, MessageSquare, Upload, FileText, Pencil, Download, X, Copy, CopyPlus, ChevronDown, ChevronRight, Wand2, MoreHorizontal } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { useQueryClient, useQuery } from "@tanstack/react-query";
@@ -384,29 +387,39 @@ export function CampaignMessage({ campaignId, campaign, selectedRegions = [], au
 
   const MATERIAL_TYPES = ["One Pager", "Presentation", "Case Study", "Brochure", "Other"];
 
-  return (
-    <div className="space-y-4">
-      {/* AI-first entry point */}
-      <div className="flex items-center justify-between gap-2 border border-dashed border-primary/30 bg-primary/5 rounded-lg p-3">
-        <div className="flex items-start gap-2 min-w-0">
-          <Sparkles className="h-4 w-4 text-primary shrink-0 mt-0.5" />
-          <div className="min-w-0">
-            <p className="text-sm font-medium">Generate emails, LinkedIn messages & call scripts with AI</p>
-            <p className="text-[11px] text-muted-foreground">Uses your campaign goal, regions, and audience as context. Outputs include personalization placeholders so they auto-fill per recipient.</p>
-          </div>
-        </div>
-        <Button size="sm" className="h-8 gap-1.5 shrink-0" onClick={() => setAiWizardOpen(true)}>
-          <Wand2 className="h-3.5 w-3.5" /> Generate with AI
-        </Button>
-      </div>
+  // Channel-aware visibility honors enabled_channels (multi-channel) with legacy
+  // fallback to primary_channel. Empty / no channels = show everything.
+  const norm = (v?: string | null) => (v === "Call" ? "Phone" : (v || "")).trim();
+  const enabled: string[] = (() => {
+    const raw = (campaign as any)?.enabled_channels as string[] | null | undefined;
+    const arr = (raw && raw.length > 0) ? raw.map(norm).filter(Boolean) : [];
+    if (arr.length > 0) return arr;
+    const pc = norm(campaign?.primary_channel);
+    return pc ? [pc] : [];
+  })();
+  const showEmails = enabled.length === 0 || enabled.includes("Email");
+  const showCalls = enabled.length === 0 || enabled.includes("Phone");
+  const showLinkedIn = enabled.length === 0 || enabled.includes("LinkedIn");
 
-      {/* Email Templates */}
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <span className="text-xs font-medium flex items-center gap-1.5 text-muted-foreground"><Mail className="h-3.5 w-3.5" /> Emails <Badge variant="secondary" className="text-[10px] px-1.5 py-0">{regularEmailTemplates.length}</Badge></span>
-          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={openEmailCreate}><Plus className="h-3.5 w-3.5 mr-1" /> Add</Button>
-        </div>
-        {regularEmailTemplates.length === 0 ? (
+  const tabsConfig: Array<{ key: "emails" | "scripts" | "linkedin" | "materials"; visible: boolean }> = [
+    { key: "emails", visible: showEmails },
+    { key: "scripts", visible: showCalls },
+    { key: "linkedin", visible: showLinkedIn },
+    { key: "materials", visible: true },
+  ];
+  const visibleTabKeys = tabsConfig.filter(t => t.visible).map(t => t.key);
+
+  const [activeTab, setActiveTab] = useState<"emails" | "scripts" | "linkedin" | "materials">("emails");
+
+  // Re-pin to a visible tab if the channel changes and the active tab gets hidden.
+  if (visibleTabKeys.length > 0 && !visibleTabKeys.includes(activeTab)) {
+    // Defer to next tick to avoid setState during render in StrictMode.
+    queueMicrotask(() => setActiveTab(visibleTabKeys[0]));
+  }
+
+  const renderEmails = () => (
+    <>
+      {regularEmailTemplates.length === 0 ? (
           <p className="text-xs text-muted-foreground py-1">No email templates yet.</p>
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
@@ -424,9 +437,17 @@ export function CampaignMessage({ campaignId, campaign, selectedRegions = [], au
                     </div>
                     <div className="flex items-center shrink-0">
                       <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => copyToClipboard(`Subject: ${t.subject}\n\n${displayBody}`, "Email copied")} title="Copy"><Copy className="h-3 w-3" /></Button>
-                      <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => duplicateEmailTemplate(t)} title="Duplicate"><CopyPlus className="h-3 w-3" /></Button>
-                      <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => openEmailEdit(t)}><Pencil className="h-3 w-3" /></Button>
-                      <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => confirmDeleteEmailTemplate(t.id, t.template_name)}><Trash2 className="h-3 w-3 text-muted-foreground" /></Button>
+                      <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => openEmailEdit(t)} title="Edit"><Pencil className="h-3 w-3" /></Button>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="icon" className="h-6 w-6"><MoreHorizontal className="h-3 w-3" /></Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onClick={() => duplicateEmailTemplate(t)}><CopyPlus className="h-3.5 w-3.5 mr-2" /> Duplicate</DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem onClick={() => confirmDeleteEmailTemplate(t.id, t.template_name)} className="text-destructive"><Trash2 className="h-3.5 w-3.5 mr-2" /> Delete</DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                     </div>
                   </div>
                   <p className="text-[11px] text-muted-foreground mb-0.5">Sub: {t.subject}</p>
@@ -441,17 +462,12 @@ export function CampaignMessage({ campaignId, campaign, selectedRegions = [], au
             })}
           </div>
         )}
-      </div>
+    </>
+  );
 
-      <hr className="border-border" />
-
-      {/* Call Scripts */}
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <span className="text-xs font-medium flex items-center gap-1.5 text-muted-foreground"><Phone className="h-3.5 w-3.5" /> Call Scripts <Badge variant="secondary" className="text-[10px] px-1.5 py-0">{phoneScripts.length}</Badge></span>
-          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={openScriptCreate}><Plus className="h-3.5 w-3.5 mr-1" /> Add</Button>
-        </div>
-        {phoneScripts.length === 0 ? (
+  const renderScripts = () => (
+    <>
+      {phoneScripts.length === 0 ? (
           <p className="text-xs text-muted-foreground py-1">No call scripts yet.</p>
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
@@ -478,9 +494,17 @@ export function CampaignMessage({ campaignId, campaign, selectedRegions = [], au
                         `${s.script_name}\n\nOpening: ${s.opening_script || ""}\n\nTalking Points:\n${points.join("\n")}\n\nQuestions:\n${qs.join("\n")}`,
                         "Script copied"
                       )} title="Copy"><Copy className="h-3 w-3" /></Button>
-                      <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => duplicatePhoneScript(s)} title="Duplicate"><CopyPlus className="h-3 w-3" /></Button>
-                      <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => openScriptEdit(s)}><Pencil className="h-3 w-3" /></Button>
-                      <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => confirmDeletePhoneScript(s.id, s.script_name || "Script")}><Trash2 className="h-3 w-3 text-muted-foreground" /></Button>
+                      <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => openScriptEdit(s)} title="Edit"><Pencil className="h-3 w-3" /></Button>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="icon" className="h-6 w-6"><MoreHorizontal className="h-3 w-3" /></Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onClick={() => duplicatePhoneScript(s)}><CopyPlus className="h-3.5 w-3.5 mr-2" /> Duplicate</DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem onClick={() => confirmDeletePhoneScript(s.id, s.script_name || "Script")} className="text-destructive"><Trash2 className="h-3.5 w-3.5 mr-2" /> Delete</DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                     </div>
                   </div>
                   {s.opening_script && <p className="text-[11px] text-muted-foreground mb-1 line-clamp-1">Opening: {s.opening_script}</p>}
@@ -533,17 +557,12 @@ export function CampaignMessage({ campaignId, campaign, selectedRegions = [], au
             })}
           </div>
         )}
-      </div>
+    </>
+  );
 
-      <hr className="border-border" />
-
-      {/* LinkedIn Messages */}
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <span className="text-xs font-medium flex items-center gap-1.5 text-muted-foreground"><MessageSquare className="h-3.5 w-3.5" /> LinkedIn <Badge variant="secondary" className="text-[10px] px-1.5 py-0">{linkedinTemplates.length}</Badge></span>
-          <Button size="sm" variant="outline" className="h-7 text-xs" onClick={openLinkedinCreate}><Plus className="h-3.5 w-3.5 mr-1" /> Add</Button>
-        </div>
-        {linkedinTemplates.length === 0 ? (
+  const renderLinkedIn = () => (
+    <>
+      {linkedinTemplates.length === 0 ? (
           <p className="text-xs text-muted-foreground py-1">No LinkedIn message templates yet.</p>
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
@@ -563,9 +582,17 @@ export function CampaignMessage({ campaignId, campaign, selectedRegions = [], au
                     </div>
                     <div className="flex items-center shrink-0">
                       <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => copyToClipboard(t.body || "", "Message copied")} title="Copy"><Copy className="h-3 w-3" /></Button>
-                      <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => duplicateEmailTemplate(t)} title="Duplicate"><CopyPlus className="h-3 w-3" /></Button>
-                      <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => openLinkedinEdit(t)}><Pencil className="h-3 w-3" /></Button>
-                      <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => confirmDeleteEmailTemplate(t.id, t.template_name)}><Trash2 className="h-3 w-3 text-muted-foreground" /></Button>
+                      <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => openLinkedinEdit(t)} title="Edit"><Pencil className="h-3 w-3" /></Button>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="icon" className="h-6 w-6"><MoreHorizontal className="h-3 w-3" /></Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onClick={() => duplicateEmailTemplate(t)}><CopyPlus className="h-3.5 w-3.5 mr-2" /> Duplicate</DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem onClick={() => confirmDeleteEmailTemplate(t.id, t.template_name)} className="text-destructive"><Trash2 className="h-3.5 w-3.5 mr-2" /> Delete</DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                     </div>
                   </div>
                   <p className="text-[11px] text-muted-foreground line-clamp-2">{t.body}</p>
@@ -574,22 +601,13 @@ export function CampaignMessage({ campaignId, campaign, selectedRegions = [], au
             })}
           </div>
         )}
-      </div>
+    </>
+  );
 
-      <hr className="border-border" />
-
-      {/* Marketing Materials */}
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <span className="text-xs font-medium flex items-center gap-1.5 text-muted-foreground"><FileText className="h-3.5 w-3.5" /> Materials <Badge variant="secondary" className="text-[10px] px-1.5 py-0">{materials.length}</Badge></span>
-          <div>
-            <input type="file" id="material-upload" className="hidden" multiple onChange={handleFileUpload} accept=".pdf,.pptx,.ppt,.doc,.docx,.png,.jpg,.jpeg" />
-            <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => document.getElementById("material-upload")?.click()} disabled={uploading}>
-              <Upload className="h-3.5 w-3.5 mr-1" /> {uploading ? "Uploading..." : "Upload"}
-            </Button>
-          </div>
-        </div>
-        {materials.length === 0 ? (
+  const renderMaterials = () => (
+    <>
+      <input type="file" id="material-upload" className="hidden" multiple onChange={handleFileUpload} accept=".pdf,.pptx,.ppt,.doc,.docx,.png,.jpg,.jpeg" />
+      {materials.length === 0 ? (
           <p className="text-xs text-muted-foreground py-1">No marketing materials uploaded.</p>
         ) : (
           <Table>
@@ -614,8 +632,15 @@ export function CampaignMessage({ campaignId, campaign, selectedRegions = [], au
                   </TableCell>
                   <TableCell className="py-1">
                     <div className="flex gap-0.5">
-                      <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => downloadMaterial(m.file_path, m.file_name)}><Download className="h-3 w-3" /></Button>
-                      <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => confirmDeleteMaterial(m.id, m.file_name, m.file_path)}><Trash2 className="h-3 w-3 text-muted-foreground" /></Button>
+                      <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => downloadMaterial(m.file_path, m.file_name)} title="Download"><Download className="h-3 w-3" /></Button>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="icon" className="h-6 w-6"><MoreHorizontal className="h-3 w-3" /></Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onClick={() => confirmDeleteMaterial(m.id, m.file_name, m.file_path)} className="text-destructive"><Trash2 className="h-3.5 w-3.5 mr-2" /> Delete</DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                     </div>
                   </TableCell>
                 </TableRow>
@@ -623,7 +648,56 @@ export function CampaignMessage({ campaignId, campaign, selectedRegions = [], au
             </TableBody>
           </Table>
         )}
+    </>
+  );
+
+  return (
+    <TooltipProvider delayDuration={150}>
+    <div className="space-y-3">
+      {/* Unified toolbar */}
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex items-center gap-3 text-xs text-muted-foreground">
+          {showEmails && <Tooltip><TooltipTrigger asChild><span className="inline-flex items-center gap-1"><Mail className="h-3.5 w-3.5" /><span className="font-medium text-foreground">{regularEmailTemplates.length}</span></span></TooltipTrigger><TooltipContent>Email templates</TooltipContent></Tooltip>}
+          {showCalls && <Tooltip><TooltipTrigger asChild><span className="inline-flex items-center gap-1"><Phone className="h-3.5 w-3.5" /><span className="font-medium text-foreground">{phoneScripts.length}</span></span></TooltipTrigger><TooltipContent>Call scripts</TooltipContent></Tooltip>}
+          {showLinkedIn && <Tooltip><TooltipTrigger asChild><span className="inline-flex items-center gap-1"><MessageSquare className="h-3.5 w-3.5" /><span className="font-medium text-foreground">{linkedinTemplates.length}</span></span></TooltipTrigger><TooltipContent>LinkedIn messages</TooltipContent></Tooltip>}
+          <Tooltip><TooltipTrigger asChild><span className="inline-flex items-center gap-1"><FileText className="h-3.5 w-3.5" /><span className="font-medium text-foreground">{materials.length}</span></span></TooltipTrigger><TooltipContent>Marketing materials</TooltipContent></Tooltip>
+        </div>
+        <div className="flex items-center gap-2">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button size="sm" className="h-7 gap-1.5 text-xs" onClick={() => setAiWizardOpen(true)}>
+                <Wand2 className="h-3.5 w-3.5" /> Generate with AI
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Uses campaign goal, regions and audience as context.</TooltipContent>
+          </Tooltip>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button size="sm" variant="outline" className="h-7 text-xs"><Plus className="h-3.5 w-3.5 mr-1" /> Add</Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              {showEmails && <DropdownMenuItem onClick={() => { setActiveTab("emails"); openEmailCreate(); }}><Mail className="h-3.5 w-3.5 mr-2" /> New email</DropdownMenuItem>}
+              {showCalls && <DropdownMenuItem onClick={() => { setActiveTab("scripts"); openScriptCreate(); }}><Phone className="h-3.5 w-3.5 mr-2" /> New call script</DropdownMenuItem>}
+              {showLinkedIn && <DropdownMenuItem onClick={() => { setActiveTab("linkedin"); openLinkedinCreate(); }}><MessageSquare className="h-3.5 w-3.5 mr-2" /> New LinkedIn message</DropdownMenuItem>}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => { setActiveTab("materials"); document.getElementById("material-upload")?.click(); }}><Upload className="h-3.5 w-3.5 mr-2" /> Upload material</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </div>
+
+      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)}>
+        <TabsList className="h-9">
+          {showEmails && <TabsTrigger value="emails" className="text-xs">Emails ({regularEmailTemplates.length})</TabsTrigger>}
+          {showCalls && <TabsTrigger value="scripts" className="text-xs">Call Scripts ({phoneScripts.length})</TabsTrigger>}
+          {showLinkedIn && <TabsTrigger value="linkedin" className="text-xs">LinkedIn ({linkedinTemplates.length})</TabsTrigger>}
+          <TabsTrigger value="materials" className="text-xs">Materials ({materials.length})</TabsTrigger>
+        </TabsList>
+        {showEmails && <TabsContent value="emails" className="mt-3">{renderEmails()}</TabsContent>}
+        {showCalls && <TabsContent value="scripts" className="mt-3">{renderScripts()}</TabsContent>}
+        {showLinkedIn && <TabsContent value="linkedin" className="mt-3">{renderLinkedIn()}</TabsContent>}
+        <TabsContent value="materials" className="mt-3">{renderMaterials()}</TabsContent>
+      </Tabs>
 
       {/* Delete Confirmation Dialog */}
       <AlertDialog open={!!deleteConfirm} onOpenChange={(open) => !open && setDeleteConfirm(null)}>
@@ -760,5 +834,6 @@ export function CampaignMessage({ campaignId, campaign, selectedRegions = [], au
         campaignContext={buildAiContext()}
       />
     </div>
+    </TooltipProvider>
   );
 }
