@@ -285,6 +285,7 @@ export function useCampaigns(options: UseCampaignsOptions = {}) {
           mart_complete: false,
           priority: (source as any).priority || "Medium",
           primary_channel: (source as any).primary_channel || null,
+          enabled_channels: (source as any).enabled_channels || ["Email", "Phone", "LinkedIn"],
           tags: (source as any).tags || null,
           created_by: user!.id,
         } as any);
