@@ -25,6 +25,9 @@ interface Props {
   campaign?: Campaign;
   selectedRegions?: string[];
   audienceCounts?: { accounts: number; contacts: number };
+  /** When true, all create/edit/delete/AI actions are hidden so a Completed
+   * campaign can be reviewed but not modified. */
+  isReadOnly?: boolean;
 }
 
 function DynamicList({ items, onChange, placeholder }: { items: string[]; onChange: (items: string[]) => void; placeholder?: string }) {
