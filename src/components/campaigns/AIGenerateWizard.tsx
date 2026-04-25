@@ -13,7 +13,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "@/hooks/use-toast";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
-type AiKind = "email" | "linkedin-connection" | "phone";
+type AiKind = "email" | "linkedin-connection" | "linkedin-followup" | "phone";
 
 interface Props {
   open: boolean;
@@ -35,12 +35,14 @@ interface Props {
 const KIND_OPTIONS: { id: AiKind; label: string; icon: typeof Mail }[] = [
   { id: "email", label: "Email", icon: Mail },
   { id: "linkedin-connection", label: "LinkedIn Connection", icon: Linkedin },
+  { id: "linkedin-followup", label: "LinkedIn Follow-up", icon: Linkedin },
   { id: "phone", label: "Call Script", icon: Phone },
 ];
 
 const KIND_LABEL: Record<AiKind, string> = {
   email: "Email",
   "linkedin-connection": "LinkedIn Connection",
+  "linkedin-followup": "LinkedIn Follow-up",
   phone: "Call Script",
 };
 
