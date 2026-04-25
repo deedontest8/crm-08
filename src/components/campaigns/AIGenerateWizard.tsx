@@ -297,7 +297,7 @@ export function AIGenerateWizard({ open, onOpenChange, campaignId, campaignConte
                     </div>
                   )}
 
-                  {item.result && item.kind === "linkedin-connection" && (
+                  {item.result && (item.kind === "linkedin-connection" || item.kind === "linkedin-followup") && (
                     <div>
                       <Label className="text-[11px] text-muted-foreground">
                         Message ({(item.result.body || "").length} / 300)
