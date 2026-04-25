@@ -96,13 +96,32 @@ export function CampaignMessage({ campaignId, campaign, selectedRegions = [], au
 
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: string; id: string; name: string; filePath?: string } | null>(null);
 
+  // Sample industries from selected accounts and positions from selected contacts
+  // — feeds AI context so generated copy mentions sectors/seniorities the user actually targets.
+  const { data: audienceSamples } = useQuery({
+    queryKey: ["campaign-ai-samples", campaignId],
+    queryFn: async () => {
+      const [{ data: accs }, { data: cons }] = await Promise.all([
+        supabase.from("campaign_accounts").select("accounts(industry)").eq("campaign_id", campaignId).limit(50),
+        supabase.from("campaign_contacts").select("contacts(position)").eq("campaign_id", campaignId).limit(50),
+      ]);
+      const industries = Array.from(new Set(((accs as any) || []).map((r: any) => r.accounts?.industry).filter(Boolean))).slice(0, 5);
+      const positions = Array.from(new Set(((cons as any) || []).map((r: any) => r.contacts?.position).filter(Boolean))).slice(0, 5);
+      return { industries: industries as string[], positions: positions as string[] };
+    },
+    enabled: !!campaignId,
+  });
+
   const buildAiContext = () => ({
     campaign_name: campaign?.campaign_name || "Campaign",
     campaign_type: campaign?.campaign_type || undefined,
     goal: campaign?.goal || undefined,
     regions: selectedRegions,
+    selectedCountries: (campaign?.country || "").split(",").map((c) => c.trim()).filter(Boolean),
     accountCount: audienceCounts?.accounts || 0,
     contactCount: audienceCounts?.contacts || 0,
+    sampleIndustries: audienceSamples?.industries || [],
+    samplePositions: audienceSamples?.positions || [],
   });
 
   const { data: emailTemplates = [] } = useQuery({
