@@ -269,6 +269,7 @@ export function CampaignStrategy({ campaignId, campaign, isStrategyComplete, upd
                       campaign={campaign}
                       selectedRegions={selectedRegions}
                       audienceCounts={{ accounts: contentCounts?.accountCount ?? 0, contacts: contentCounts?.contactCount ?? 0 }}
+                      isReadOnly={isReadOnly}
                     />
                   )}
                   {section.key === "timing" && (
