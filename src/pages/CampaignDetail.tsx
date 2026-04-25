@@ -381,6 +381,7 @@ export default function CampaignDetail() {
                   endDate={campaign.end_date}
                   initialOpenSection={drilldown?.tab === "setup" ? drilldown.section : undefined}
                   audienceView={drilldown?.tab === "setup" ? drilldown.audienceView : undefined}
+                  isReadOnly={isCompleted}
                   contentCounts={{
                     emailTemplateCount: detail.emailTemplates.filter(t => t.email_type !== "LinkedIn-Connection" && t.email_type !== "LinkedIn-Followup").length,
                     phoneScriptCount: detail.phoneScripts.length,

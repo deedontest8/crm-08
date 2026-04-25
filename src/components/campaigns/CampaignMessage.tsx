@@ -25,6 +25,9 @@ interface Props {
   campaign?: Campaign;
   selectedRegions?: string[];
   audienceCounts?: { accounts: number; contacts: number };
+  /** When true, all create/edit/delete/AI actions are hidden so a Completed
+   * campaign can be reviewed but not modified. */
+  isReadOnly?: boolean;
 }
 
 function DynamicList({ items, onChange, placeholder }: { items: string[]; onChange: (items: string[]) => void; placeholder?: string }) {
@@ -78,7 +81,7 @@ function parseObjectionArray(text: string | null): { objection: string; response
   try { const arr = JSON.parse(text); return Array.isArray(arr) ? arr : []; } catch { return text ? [{ objection: text, response: "" }] : []; }
 }
 
-export function CampaignMessage({ campaignId, campaign, selectedRegions = [], audienceCounts }: Props) {
+export function CampaignMessage({ campaignId, campaign, selectedRegions = [], audienceCounts, isReadOnly = false }: Props) {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const [emailModalOpen, setEmailModalOpen] = useState(false);
@@ -93,13 +96,32 @@ export function CampaignMessage({ campaignId, campaign, selectedRegions = [], au
 
   const [deleteConfirm, setDeleteConfirm] = useState<{ type: string; id: string; name: string; filePath?: string } | null>(null);
 
+  // Sample industries from selected accounts and positions from selected contacts
+  // — feeds AI context so generated copy mentions sectors/seniorities the user actually targets.
+  const { data: audienceSamples } = useQuery({
+    queryKey: ["campaign-ai-samples", campaignId],
+    queryFn: async () => {
+      const [{ data: accs }, { data: cons }] = await Promise.all([
+        supabase.from("campaign_accounts").select("accounts(industry)").eq("campaign_id", campaignId).limit(50),
+        supabase.from("campaign_contacts").select("contacts(position)").eq("campaign_id", campaignId).limit(50),
+      ]);
+      const industries = Array.from(new Set(((accs as any) || []).map((r: any) => r.accounts?.industry).filter(Boolean))).slice(0, 5);
+      const positions = Array.from(new Set(((cons as any) || []).map((r: any) => r.contacts?.position).filter(Boolean))).slice(0, 5);
+      return { industries: industries as string[], positions: positions as string[] };
+    },
+    enabled: !!campaignId,
+  });
+
   const buildAiContext = () => ({
     campaign_name: campaign?.campaign_name || "Campaign",
     campaign_type: campaign?.campaign_type || undefined,
     goal: campaign?.goal || undefined,
     regions: selectedRegions,
+    selectedCountries: (campaign?.country || "").split(",").map((c) => c.trim()).filter(Boolean),
     accountCount: audienceCounts?.accounts || 0,
     contactCount: audienceCounts?.contacts || 0,
+    sampleIndustries: audienceSamples?.industries || [],
+    samplePositions: audienceSamples?.positions || [],
   });
 
   const { data: emailTemplates = [] } = useQuery({
@@ -662,28 +684,33 @@ export function CampaignMessage({ campaignId, campaign, selectedRegions = [], au
           {showLinkedIn && <Tooltip><TooltipTrigger asChild><span className="inline-flex items-center gap-1"><MessageSquare className="h-3.5 w-3.5" /><span className="font-medium text-foreground">{linkedinTemplates.length}</span></span></TooltipTrigger><TooltipContent>LinkedIn messages</TooltipContent></Tooltip>}
           <Tooltip><TooltipTrigger asChild><span className="inline-flex items-center gap-1"><FileText className="h-3.5 w-3.5" /><span className="font-medium text-foreground">{materials.length}</span></span></TooltipTrigger><TooltipContent>Marketing materials</TooltipContent></Tooltip>
         </div>
-        <div className="flex items-center gap-2">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button size="sm" className="h-7 gap-1.5 text-xs" onClick={() => setAiWizardOpen(true)}>
-                <Wand2 className="h-3.5 w-3.5" /> Generate with AI
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Uses campaign goal, regions and audience as context.</TooltipContent>
-          </Tooltip>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button size="sm" variant="outline" className="h-7 text-xs"><Plus className="h-3.5 w-3.5 mr-1" /> Add</Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              {showEmails && <DropdownMenuItem onClick={() => { setActiveTab("emails"); openEmailCreate(); }}><Mail className="h-3.5 w-3.5 mr-2" /> New email</DropdownMenuItem>}
-              {showCalls && <DropdownMenuItem onClick={() => { setActiveTab("scripts"); openScriptCreate(); }}><Phone className="h-3.5 w-3.5 mr-2" /> New call script</DropdownMenuItem>}
-              {showLinkedIn && <DropdownMenuItem onClick={() => { setActiveTab("linkedin"); openLinkedinCreate(); }}><MessageSquare className="h-3.5 w-3.5 mr-2" /> New LinkedIn message</DropdownMenuItem>}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => { setActiveTab("materials"); document.getElementById("material-upload")?.click(); }}><Upload className="h-3.5 w-3.5 mr-2" /> Upload material</DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
+        {!isReadOnly && (
+          <div className="flex items-center gap-2">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button size="sm" className="h-7 gap-1.5 text-xs" onClick={() => setAiWizardOpen(true)}>
+                  <Wand2 className="h-3.5 w-3.5" /> Generate with AI
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Uses campaign goal, regions and audience as context.</TooltipContent>
+            </Tooltip>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button size="sm" variant="outline" className="h-7 text-xs"><Plus className="h-3.5 w-3.5 mr-1" /> Add</Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {showEmails && <DropdownMenuItem onClick={() => { setActiveTab("emails"); openEmailCreate(); }}><Mail className="h-3.5 w-3.5 mr-2" /> New email</DropdownMenuItem>}
+                {showCalls && <DropdownMenuItem onClick={() => { setActiveTab("scripts"); openScriptCreate(); }}><Phone className="h-3.5 w-3.5 mr-2" /> New call script</DropdownMenuItem>}
+                {showLinkedIn && <DropdownMenuItem onClick={() => { setActiveTab("linkedin"); openLinkedinCreate(); }}><MessageSquare className="h-3.5 w-3.5 mr-2" /> New LinkedIn message</DropdownMenuItem>}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => { setActiveTab("materials"); document.getElementById("material-upload")?.click(); }}><Upload className="h-3.5 w-3.5 mr-2" /> Upload material</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        )}
+        {isReadOnly && (
+          <span className="text-[11px] text-muted-foreground italic">Read-only — campaign is completed</span>
+        )}
       </div>
 
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)}>

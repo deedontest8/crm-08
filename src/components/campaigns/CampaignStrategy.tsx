@@ -26,6 +26,8 @@ interface Props {
   endDate?: string | null;
   initialOpenSection?: "region" | "audience" | "message" | "timing";
   audienceView?: "accounts" | "contacts";
+  /** When true (campaign Completed), Message section hides create/edit actions. */
+  isReadOnly?: boolean;
   contentCounts?: {
     emailTemplateCount: number;
     phoneScriptCount: number;
@@ -50,7 +52,7 @@ export function parseSelectedRegions(raw: string | null): string[] {
   return raw && !raw.startsWith("[") ? [raw] : [];
 }
 
-export function CampaignStrategy({ campaignId, campaign, isStrategyComplete, updateStrategyFlag, isCampaignEnded, daysRemaining, timingNotes, campaignName, campaignOwner, endDate, initialOpenSection, audienceView, contentCounts }: Props) {
+export function CampaignStrategy({ campaignId, campaign, isStrategyComplete, updateStrategyFlag, isCampaignEnded, daysRemaining, timingNotes, campaignName, campaignOwner, endDate, initialOpenSection, audienceView, isReadOnly = false, contentCounts }: Props) {
   const queryClient = useQueryClient();
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({
     region: true, audience: false, message: false, timing: false,
@@ -267,6 +269,7 @@ export function CampaignStrategy({ campaignId, campaign, isStrategyComplete, upd
                       campaign={campaign}
                       selectedRegions={selectedRegions}
                       audienceCounts={{ accounts: contentCounts?.accountCount ?? 0, contacts: contentCounts?.contactCount ?? 0 }}
+                      isReadOnly={isReadOnly}
                     />
                   )}
                   {section.key === "timing" && (

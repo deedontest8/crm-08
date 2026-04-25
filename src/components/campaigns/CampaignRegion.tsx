@@ -163,8 +163,14 @@ export function CampaignRegion({ campaign }: Props) {
     setSaving(true);
     let notes = campaign.notes || "";
     notes = notes.replace(/\[timezone:.+?\]\s*/g, "").trim();
+    // Persist ALL distinct countries (comma-joined) to campaigns.country, not just the first.
+    // Multiple region cards may share a region but target different countries — all need to be
+    // discoverable for downstream filters and template region matching.
+    const countryList = Array.from(
+      new Set(regs.map(r => (r.country || "").trim()).filter(Boolean))
+    ).join(", ");
     updateCampaign.mutate(
-      { id: campaign.id, region: JSON.stringify(regs), country: regs[0]?.country || null, notes },
+      { id: campaign.id, region: JSON.stringify(regs), country: countryList || null, notes: notes || null },
       { onSettled: () => setSaving(false) }
     );
   };

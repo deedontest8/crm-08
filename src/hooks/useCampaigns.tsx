@@ -285,6 +285,7 @@ export function useCampaigns(options: UseCampaignsOptions = {}) {
           mart_complete: false,
           priority: (source as any).priority || "Medium",
           primary_channel: (source as any).primary_channel || null,
+          enabled_channels: (source as any).enabled_channels || ["Email", "Phone", "LinkedIn"],
           tags: (source as any).tags || null,
           created_by: user!.id,
         } as any);
@@ -361,6 +362,24 @@ export function useCampaigns(options: UseCampaignsOptions = {}) {
             account_id: c.account_id,
             stage: "Not Contacted",
             linkedin_status: "Not Contacted",
+            created_by: user!.id,
+          }))
+        );
+      }
+
+      // 8. Clone marketing materials (file references — same storage paths,
+      // since we don't deep-copy the underlying files in storage).
+      const { data: matRows } = await supabase
+        .from("campaign_materials")
+        .select("*")
+        .eq("campaign_id", sourceId);
+      if (matRows?.length) {
+        await supabase.from("campaign_materials").insert(
+          matRows.map((m) => ({
+            campaign_id: newId,
+            file_name: m.file_name,
+            file_path: m.file_path,
+            file_type: m.file_type,
             created_by: user!.id,
           }))
         );
