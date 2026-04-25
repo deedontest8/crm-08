@@ -26,6 +26,8 @@ interface Props {
   endDate?: string | null;
   initialOpenSection?: "region" | "audience" | "message" | "timing";
   audienceView?: "accounts" | "contacts";
+  /** When true (campaign Completed), Message section hides create/edit actions. */
+  isReadOnly?: boolean;
   contentCounts?: {
     emailTemplateCount: number;
     phoneScriptCount: number;
