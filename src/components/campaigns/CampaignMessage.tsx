@@ -81,7 +81,7 @@ function parseObjectionArray(text: string | null): { objection: string; response
   try { const arr = JSON.parse(text); return Array.isArray(arr) ? arr : []; } catch { return text ? [{ objection: text, response: "" }] : []; }
 }
 
-export function CampaignMessage({ campaignId, campaign, selectedRegions = [], audienceCounts }: Props) {
+export function CampaignMessage({ campaignId, campaign, selectedRegions = [], audienceCounts, isReadOnly = false }: Props) {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   const [emailModalOpen, setEmailModalOpen] = useState(false);
