@@ -367,6 +367,24 @@ export function useCampaigns(options: UseCampaignsOptions = {}) {
         );
       }
 
+      // 8. Clone marketing materials (file references — same storage paths,
+      // since we don't deep-copy the underlying files in storage).
+      const { data: matRows } = await supabase
+        .from("campaign_materials")
+        .select("*")
+        .eq("campaign_id", sourceId);
+      if (matRows?.length) {
+        await supabase.from("campaign_materials").insert(
+          matRows.map((m) => ({
+            campaign_id: newId,
+            file_name: m.file_name,
+            file_path: m.file_path,
+            file_type: m.file_type,
+            created_by: user!.id,
+          }))
+        );
+      }
+
       // Re-read the slug after the DB trigger generated it.
       const { data: cloned } = await supabase
         .from("campaigns")
