@@ -665,28 +665,33 @@ export function CampaignMessage({ campaignId, campaign, selectedRegions = [], au
           {showLinkedIn && <Tooltip><TooltipTrigger asChild><span className="inline-flex items-center gap-1"><MessageSquare className="h-3.5 w-3.5" /><span className="font-medium text-foreground">{linkedinTemplates.length}</span></span></TooltipTrigger><TooltipContent>LinkedIn messages</TooltipContent></Tooltip>}
           <Tooltip><TooltipTrigger asChild><span className="inline-flex items-center gap-1"><FileText className="h-3.5 w-3.5" /><span className="font-medium text-foreground">{materials.length}</span></span></TooltipTrigger><TooltipContent>Marketing materials</TooltipContent></Tooltip>
         </div>
-        <div className="flex items-center gap-2">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button size="sm" className="h-7 gap-1.5 text-xs" onClick={() => setAiWizardOpen(true)}>
-                <Wand2 className="h-3.5 w-3.5" /> Generate with AI
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Uses campaign goal, regions and audience as context.</TooltipContent>
-          </Tooltip>
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button size="sm" variant="outline" className="h-7 text-xs"><Plus className="h-3.5 w-3.5 mr-1" /> Add</Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              {showEmails && <DropdownMenuItem onClick={() => { setActiveTab("emails"); openEmailCreate(); }}><Mail className="h-3.5 w-3.5 mr-2" /> New email</DropdownMenuItem>}
-              {showCalls && <DropdownMenuItem onClick={() => { setActiveTab("scripts"); openScriptCreate(); }}><Phone className="h-3.5 w-3.5 mr-2" /> New call script</DropdownMenuItem>}
-              {showLinkedIn && <DropdownMenuItem onClick={() => { setActiveTab("linkedin"); openLinkedinCreate(); }}><MessageSquare className="h-3.5 w-3.5 mr-2" /> New LinkedIn message</DropdownMenuItem>}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onClick={() => { setActiveTab("materials"); document.getElementById("material-upload")?.click(); }}><Upload className="h-3.5 w-3.5 mr-2" /> Upload material</DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
+        {!isReadOnly && (
+          <div className="flex items-center gap-2">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button size="sm" className="h-7 gap-1.5 text-xs" onClick={() => setAiWizardOpen(true)}>
+                  <Wand2 className="h-3.5 w-3.5" /> Generate with AI
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Uses campaign goal, regions and audience as context.</TooltipContent>
+            </Tooltip>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button size="sm" variant="outline" className="h-7 text-xs"><Plus className="h-3.5 w-3.5 mr-1" /> Add</Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {showEmails && <DropdownMenuItem onClick={() => { setActiveTab("emails"); openEmailCreate(); }}><Mail className="h-3.5 w-3.5 mr-2" /> New email</DropdownMenuItem>}
+                {showCalls && <DropdownMenuItem onClick={() => { setActiveTab("scripts"); openScriptCreate(); }}><Phone className="h-3.5 w-3.5 mr-2" /> New call script</DropdownMenuItem>}
+                {showLinkedIn && <DropdownMenuItem onClick={() => { setActiveTab("linkedin"); openLinkedinCreate(); }}><MessageSquare className="h-3.5 w-3.5 mr-2" /> New LinkedIn message</DropdownMenuItem>}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => { setActiveTab("materials"); document.getElementById("material-upload")?.click(); }}><Upload className="h-3.5 w-3.5 mr-2" /> Upload material</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        )}
+        {isReadOnly && (
+          <span className="text-[11px] text-muted-foreground italic">Read-only — campaign is completed</span>
+        )}
       </div>
 
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as any)}>
