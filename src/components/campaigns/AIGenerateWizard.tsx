@@ -65,7 +65,7 @@ export function AIGenerateWizard({ open, onOpenChange, campaignId, campaignConte
 
   const [step, setStep] = useState<"form" | "preview">("form");
   const [selected, setSelected] = useState<Record<AiKind, boolean>>({
-    email: true, "linkedin-connection": false, phone: false,
+    email: true, "linkedin-connection": false, "linkedin-followup": false, phone: false,
   });
   const [context, setContext] = useState("");
   const [tone, setTone] = useState("Professional");
@@ -79,7 +79,7 @@ export function AIGenerateWizard({ open, onOpenChange, campaignId, campaignConte
 
   const reset = () => {
     setStep("form");
-    setSelected({ email: true, "linkedin-connection": false, phone: false });
+    setSelected({ email: true, "linkedin-connection": false, "linkedin-followup": false, phone: false });
     setContext("");
     setTone("Professional");
     setLength("Short");
