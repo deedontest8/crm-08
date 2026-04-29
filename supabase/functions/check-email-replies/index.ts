@@ -854,7 +854,7 @@ Deno.serve(async (req) => {
             } else {
               const { data: fullParent } = await supabase
                 .from("campaign_communications")
-                .select("id, campaign_id, contact_id, account_id, owner, created_by, subject, internet_message_id, communication_date")
+                .select("id, campaign_id, contact_id, account_id, owner, created_by, subject, internet_message_id, communication_date, thread_root_id")
                 .eq("id", headerAnchoredParent.id)
                 .maybeSingle();
               if (fullParent) originalEmail = fullParent;
