@@ -455,31 +455,60 @@ export function CampaignCommunications({ campaignId, isCampaignEnded, isReadOnly
     const contactActivity: Record<string, any[]> = {};
     const orphans: any[] = [];
 
-    // ── Pass 1: build a key → bucket map keyed by `conversation_id::contact_id`
-    // PLUS a secondary index from `internet_message_id` → bucketKey so we can
-    // stitch orphan rows whose `references` chain points at a known parent.
+    // ── Pass 1: build lookup indexes for thread stitching.
+    //   imidToKey  — internet_message_id → that row's own composite bucket key
+    //                (lets us stitch via the RFC 5322 References chain).
+    //   idToOwnKey — row.id → that row's own composite bucket key
+    //                (lets us stitch via parent_id, which the edge function
+    //                always sets even when Gmail/Outlook bridges rotate the
+    //                conversationId on cross-mailbox replies).
+    //   idToParent — row.id → row.parent_id (for transitive parent walks).
+    const ownKey = (c: any) => `${c.conversation_id || "no-conv"}::${c.contact_id || "no-contact"}`;
     const imidToKey = new Map<string, string>();
+    const idToOwnKey = new Map<string, string>();
+    const idToParent = new Map<string, string>();
     communications.forEach((c: any) => {
-      if (c.communication_type === "Email" && c.conversation_id && c.internet_message_id) {
-        const key = `${c.conversation_id}::${c.contact_id || "no-contact"}`;
-        imidToKey.set(String(c.internet_message_id), key);
+      if (c.communication_type === "Email") {
+        idToOwnKey.set(String(c.id), ownKey(c));
+        if (c.parent_id) idToParent.set(String(c.id), String(c.parent_id));
+        if (c.conversation_id && c.internet_message_id) {
+          imidToKey.set(String(c.internet_message_id), ownKey(c));
+        }
       }
     });
 
-    // Helper: resolve a row's effective bucket key by walking its references
-    // chain. Returns the row's own composite key when no parent is found.
+    // Resolve a row's effective bucket key. Resolution order:
+    //   1. References-chain match against a known outbound's internet_message_id
+    //      (covers replies that DID preserve the In-Reply-To/References header).
+    //   2. parent_id chain walk against another row in the same campaign
+    //      (covers Gmail→Outlook replies where Graph rotates conversationId
+    //      and References was lost — the edge function still records parent_id).
+    //   3. Fallback to the row's own composite key.
     const resolveBucketKey = (c: any): string => {
-      const own = `${c.conversation_id}::${c.contact_id || "no-contact"}`;
+      const own = ownKey(c);
+
+      // 1. References header walk (newest-first).
       const refs: string = (c.references || "").trim();
-      if (!refs) return own;
-      // References is space-separated, oldest → newest; walk newest-first
-      // so we land on the immediate parent's bucket if multiple ancestors
-      // are tracked.
-      const ids = refs.split(/\s+/).filter(Boolean).reverse();
-      for (const id of ids) {
-        const key = imidToKey.get(id);
-        if (key && key !== own) return key;
+      if (refs) {
+        const ids = refs.split(/\s+/).filter(Boolean).reverse();
+        for (const id of ids) {
+          const key = imidToKey.get(id);
+          if (key && key !== own) return key;
+        }
       }
+
+      // 2. parent_id chain walk (depth-capped to guard against accidental cycles).
+      let cursor = c.parent_id ? String(c.parent_id) : null;
+      const seen = new Set<string>([String(c.id)]);
+      let depth = 0;
+      while (cursor && !seen.has(cursor) && depth < 8) {
+        seen.add(cursor);
+        const parentKey = idToOwnKey.get(cursor);
+        if (parentKey && parentKey !== own) return parentKey;
+        cursor = idToParent.get(cursor) || null;
+        depth++;
+      }
+
       return own;
     };
 

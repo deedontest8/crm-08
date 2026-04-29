@@ -854,7 +854,7 @@ Deno.serve(async (req) => {
             } else {
               const { data: fullParent } = await supabase
                 .from("campaign_communications")
-                .select("id, campaign_id, contact_id, account_id, owner, created_by, subject, internet_message_id, communication_date")
+                .select("id, campaign_id, contact_id, account_id, owner, created_by, subject, internet_message_id, communication_date, thread_root_id")
                 .eq("id", headerAnchoredParent.id)
                 .maybeSingle();
               if (fullParent) originalEmail = fullParent;
@@ -954,6 +954,17 @@ Deno.serve(async (req) => {
           // refine this later.
           const heuristicIntent = classifyReplyHeuristic(msg.subject, cleanBody || msg.bodyPreview || null);
 
+          // Build a References header string anchored to the parent's
+          // internet_message_id. The UI's thread bucketer (CampaignCommunications.tsx)
+          // walks `references` newest-first to stitch cross-mailbox replies whose
+          // conversationId was rotated by Gmail/Outlook bridges. Without this,
+          // header-only loaders cannot reunite the inbound with its outbound.
+          const referencesForRow = originalEmail.internet_message_id || null;
+          // thread_root_id anchors analytics/threading queries on a stable id.
+          // Use the parent's existing root if present, else the parent itself.
+          const threadRootForRow =
+            (originalEmail as any).thread_root_id || originalEmail.id || null;
+
           const { error: insertErr } = await supabase
             .from("campaign_communications")
             .insert({
@@ -969,6 +980,8 @@ Deno.serve(async (req) => {
               internet_message_id: msgInternetId,
               conversation_id: msg.conversationId,
               parent_id: originalEmail.id,
+              thread_root_id: threadRootForRow,
+              references: referencesForRow,
               owner: originalEmail.owner,
               created_by: originalEmail.created_by,
               reply_intent: heuristicIntent,

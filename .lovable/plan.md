@@ -1,103 +1,73 @@
-## Findings
+## The bug
 
-I checked the uploaded Gmail PDF, current app route, database rows, edge-function logs, and the existing plan file.
+The reply IS captured (DB shows `email_status = Replied`, the Monitoring header shows `Replied 1`), but the inbound message renders in its own invisible bucket instead of inside the outbound thread, so:
 
-For campaign `Campaign 29 April` / contact `Test 1 lukas schleicher`:
+- The thread shows only the sent email ("1 message")
+- The "Replied 1" filter chip shows "No emails match"
 
-- The outbound email was logged at `2026-04-29 03:48:40 UTC` with subject `Boosting TEST's CI/CD efficiency`.
-- The uploaded PDF shows the contact replied in Gmail at `2026-04-29 09:19 IST` (`03:49 UTC`) with: `Hello, Yes, I would be interested.`
-- The app ran `check-email-replies` shortly after, but the function logs show `0 messages match tracked conversations` for the scoped check, so no inbound row was inserted.
-- The broader sync saw inbox messages but still inserted `0` replies and logged chronology skips for older conversations.
-- The preview is also currently crashing in `CampaignDetail` with `Rendered more hooks than during the previous render`, caused by a hook added after early returns in the previous setup-status change. This can prevent the Monitoring UI from working reliably.
+### Root cause
 
-## Root causes to fix
+When the contact replies from **Gmail** to an email sent from **Outlook**, Microsoft Graph assigns the inbound a **different `conversationId`** from the outbound (cross-mailbox bridges rotate the ID). Verified in DB:
 
-1. **Reply detection is too dependent on Outlook Graph `conversationId` and headers.** Gmail can display the reply in the same thread while Microsoft Graph does not expose a matching Outlook `conversationId`, and headers may not be returned/matched in the first pass.
+- Outbound `e9dbe751`: `conversation_id = ...AMejBlQAz7BHlnZougzr_kA=`
+- Inbound reply `6d294a38`: `conversation_id = ...ANeqy1dGi69MsqbZ3pRkvXg=` (different)
+- Inbound `references` column: **NULL**
+- Inbound `parent_id`: correctly points to the outbound (the edge function did its job)
 
-2. **Subject/contact/time fallback is too narrow.** The existing rescue only looks around the reply received time with a very tight window. The current reply came about one minute after send, but if Graph timestamps or timezone/ingestion differ slightly, it can be missed. Older logs show this exact class of false `chronology` skip.
+The UI in `CampaignCommunications.tsx` (`useMemo` at line 453) groups messages by `conversation_id::contact_id` and walks the `references` chain to stitch orphans. With a different `conversation_id` AND empty `references`, the inbound lands in its own bucket. That bucket is then hidden by the "pure-inbound thread" filter at line 976.
 
-3. **Manual re-sync contact scoping is fragile.** The UI derives `contact_id` by splitting a composite thread key on `::`, but the Outlook `conversationId` itself can contain `::`, so the scoped re-sync may pass the wrong/no contact scope.
+The same pattern affected the older Gmail reply `767e857b` — it only joined its parent thread because the parent's outbound followed it (subject_chronology_rescue), not via grouping.
 
-4. **Current route crash must be fixed first.** The hook-order runtime error in `CampaignDetail` must be corrected so the campaign page can render consistently.
+## Fixes
 
-## Implementation plan
+### 1. UI grouping — stitch by `parent_id` (primary fix, also repairs legacy rows)
 
-### 1. Fix the `CampaignDetail` hook-order crash
+In `src/components/campaigns/CampaignCommunications.tsx`, extend the bucketing pass:
 
-Move the auto-activate `useEffect` above the `detail.isLoading` / `!detail.campaign` early returns, and make it safe when campaign data is not loaded yet.
+- Build an `idToKey` map of every row's id → its composite key.
+- In `resolveBucketKey(c)`, after the existing `references`-walk fallback, add: if `c.parent_id` is set and resolves to a known key, use that key. Walk transitively (parent's parent) up to a small depth cap so a reply-to-a-reply still lands in the root bucket.
+- Order of resolution: own `internet_message_id` match → `references` chain → `parent_id` chain → own composite key.
 
-This fixes the runtime error without changing the intended popup behavior.
+This stitches every existing reply (including legacy rows with NULL references) without any backfill.
 
-### 2. Strengthen `check-email-replies` matching
+### 2. Edge function — write `references` on every inserted reply
 
-Update `supabase/functions/check-email-replies/index.ts` so inbound messages can be attached when they are clearly a reply by:
+In `supabase/functions/check-email-replies/index.ts` (insert at line 957), add to the insert payload:
 
-- Keeping the existing header and `conversationId` matching.
-- Adding a stronger fallback match by:
-  - sender email equals the campaign contact email,
-  - subject is compatible with the outbound subject after `Re:` normalization,
-  - received time is after the outbound send time with reasonable clock-skew tolerance,
-  - same scoped campaign/contact when provided.
-- Expanding the rescue window from a few minutes to a safer post-send window for recent campaign emails.
-- Recording the match reason in notes/logs, e.g. `subject_contact_time_rescue`, for later auditing.
-- Avoiding false positives by requiring an exact contact email match and compatible subject before bypassing `conversationId`.
+- `references`: the parent's `internet_message_id` (so future loads of the same data are stitchable purely by header walk, matching the rest of the codebase's threading model).
+- `thread_root_id`: the parent's `thread_root_id` if present, else the parent's id (keeps a stable per-thread anchor for analytics).
 
-Expected result: the Gmail reply from `deedontest1@gmail.com` to `Boosting TEST's CI/CD efficiency` will insert a `graph-sync` inbound communication, mark the original as `Replied`, and update the contact/account stage.
+### 3. Backfill existing rows (one-shot SQL migration)
 
-### 3. Fix scoped re-sync contact extraction in the UI
+Update inbound graph-sync rows that have `parent_id` but NULL `references`:
 
-Update `CampaignCommunications.tsx` so `runResync(contactIdScope)` uses the selected thread's actual `contactId` instead of parsing `selectedThreadKey` with `split("::")`.
+```sql
+UPDATE campaign_communications c
+SET "references" = p.internet_message_id,
+    thread_root_id = COALESCE(p.thread_root_id, p.id)
+FROM campaign_communications p
+WHERE c.parent_id = p.id
+  AND c.sent_via = 'graph-sync'
+  AND c."references" IS NULL
+  AND p.internet_message_id IS NOT NULL;
+```
 
-This removes ambiguity when `conversationId` contains `::`.
+This makes the existing two affected threads (and any others) render correctly immediately, without requiring users to re-trigger reply sync.
 
-### 4. Add/repair backfill behavior for missed replies
+### 4. Defensive cleanup of the "hide pure-inbound thread" rule
 
-Improve the replay/backfill section in `check-email-replies` so recently skipped or unmatched messages can be reprocessed using the improved subject/contact/time logic.
+The line-976 filter `t.messages.some(m => (m.sent_via||"manual") !== "graph-sync")` exists to hide stray autoreply-only buckets. Once fix #1 lands, a real reply will always be co-bucketed with its outbound and this rule no longer hides legitimate replies. No change needed here, but verify after fix #1 that pure-orphan-only buckets still get hidden (they will — they have no `parent_id`).
 
-If the Graph inbox contains the current reply, a manual refresh should attach it immediately after deployment.
+## Files touched
 
-### 5. Verify with logs and data
+- `src/components/campaigns/CampaignCommunications.tsx` — extend `resolveBucketKey` with `parent_id` chain walk and an `idToKey` index.
+- `supabase/functions/check-email-replies/index.ts` — add `references` and `thread_root_id` to the reply insert payload.
+- New migration — backfill `references` / `thread_root_id` on existing inbound rows linked by `parent_id`.
 
-After changes are approved and implemented:
+## Out of scope
 
-- Deploy/test `check-email-replies`.
-- Call it scoped to campaign `3676df53-a89f-4281-86cb-193b649c582e` and contact `f617dd33-46ca-4678-b670-fafc9612d1ca`.
-- Confirm a new `campaign_communications` row exists with:
-  - `sent_via = 'graph-sync'`
-  - `delivery_status = 'received'`
-  - `email_status = 'Replied'`
-  - body containing the contact reply text when Graph provides it.
-- Confirm the Monitoring tab shows `Replied 1` and the conversation shows 2 messages.
+- Refactoring the Outlook-style 2-pane `ThreadList`/`ThreadView` (already shipped).
+- Changing how `conversation_id` is assigned (we cannot — Graph controls it).
+- Reply-intent classification, follow-up scheduling — already working.
 
-## Files to change
-
-- `src/pages/CampaignDetail.tsx`
-  - Fix hook ordering for the auto-activate effect.
-
-- `src/components/campaigns/CampaignCommunications.tsx`
-  - Fix manual re-sync scoping to use selected thread/contact data directly.
-
-- `supabase/functions/check-email-replies/index.ts`
-  - Add safer subject/contact/time fallback matching and better replay/backfill logic.
-
-- `.lovable/plan.md`
-  - Update plan notes to document this reply-detection fix and the hook-order bug fix.
-
-## No database schema change planned
-
-The existing tables already support this fix:
-
-- `campaign_communications`
-- `email_reply_skip_log`
-- `campaign_unmatched_replies`
-
-No new migrations should be needed.
----
-
-# Update — Reply detection fix (Apr 29)
-
-- Fixed hook-order crash in `CampaignDetail` by hoisting the auto-activate `useEffect` above the early returns.
-- Strengthened `check-email-replies` so Gmail replies whose `conversationId` and threading headers are stripped are still picked up:
-  - Built a per-mailbox `contactEmail → recent outbounds` index and treat an inbound as relevant when the sender is a known campaign contact AND the subject is compatible with one of our recent outbounds (received after the outbound with ±2min skew).
-  - Widened the inner subject/contact/time rescue window to 7d back / 2min forward so post-send replies are not lost to a too-narrow ±10min window.
-- Fixed the manual re-sync contact scoping in `CampaignCommunications.tsx` to use the selected thread's actual `contactId` instead of splitting `selectedThreadKey` on `::`.
+Reply **Approve** to execute.
