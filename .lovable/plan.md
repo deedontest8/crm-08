@@ -1,66 +1,103 @@
-## Execute All Remaining Campaign Module Phases (Batch A + B + C)
+## Findings
 
-The user approved "execute all phases". I'll deliver in 3 sequential batches, each shippable independently. Code changes happen in default mode after this plan is approved.
+I checked the uploaded Gmail PDF, current app route, database rows, edge-function logs, and the existing plan file.
 
+For campaign `Campaign 29 April` / contact `Test 1 lukas schleicher`:
+
+- The outbound email was logged at `2026-04-29 03:48:40 UTC` with subject `Boosting TEST's CI/CD efficiency`.
+- The uploaded PDF shows the contact replied in Gmail at `2026-04-29 09:19 IST` (`03:49 UTC`) with: `Hello, Yes, I would be interested.`
+- The app ran `check-email-replies` shortly after, but the function logs show `0 messages match tracked conversations` for the scoped check, so no inbound row was inserted.
+- The broader sync saw inbox messages but still inserted `0` replies and logged chronology skips for older conversations.
+- The preview is also currently crashing in `CampaignDetail` with `Rendered more hooks than during the previous render`, caused by a hook added after early returns in the previous setup-status change. This can prevent the Monitoring UI from working reliably.
+
+## Root causes to fix
+
+1. **Reply detection is too dependent on Outlook Graph `conversationId` and headers.** Gmail can display the reply in the same thread while Microsoft Graph does not expose a matching Outlook `conversationId`, and headers may not be returned/matched in the first pass.
+
+2. **Subject/contact/time fallback is too narrow.** The existing rescue only looks around the reply received time with a very tight window. The current reply came about one minute after send, but if Graph timestamps or timezone/ingestion differ slightly, it can be missed. Older logs show this exact class of false `chronology` skip.
+
+3. **Manual re-sync contact scoping is fragile.** The UI derives `contact_id` by splitting a composite thread key on `::`, but the Outlook `conversationId` itself can contain `::`, so the scoped re-sync may pass the wrong/no contact scope.
+
+4. **Current route crash must be fixed first.** The hook-order runtime error in `CampaignDetail` must be corrected so the campaign page can render consistently.
+
+## Implementation plan
+
+### 1. Fix the `CampaignDetail` hook-order crash
+
+Move the auto-activate `useEffect` above the `detail.isLoading` / `!detail.campaign` early returns, and make it safe when campaign data is not loaded yet.
+
+This fixes the runtime error without changing the intended popup behavior.
+
+### 2. Strengthen `check-email-replies` matching
+
+Update `supabase/functions/check-email-replies/index.ts` so inbound messages can be attached when they are clearly a reply by:
+
+- Keeping the existing header and `conversationId` matching.
+- Adding a stronger fallback match by:
+  - sender email equals the campaign contact email,
+  - subject is compatible with the outbound subject after `Re:` normalization,
+  - received time is after the outbound send time with reasonable clock-skew tolerance,
+  - same scoped campaign/contact when provided.
+- Expanding the rescue window from a few minutes to a safer post-send window for recent campaign emails.
+- Recording the match reason in notes/logs, e.g. `subject_contact_time_rescue`, for later auditing.
+- Avoiding false positives by requiring an exact contact email match and compatible subject before bypassing `conversationId`.
+
+Expected result: the Gmail reply from `deedontest1@gmail.com` to `Boosting TEST's CI/CD efficiency` will insert a `graph-sync` inbound communication, mark the original as `Replied`, and update the contact/account stage.
+
+### 3. Fix scoped re-sync contact extraction in the UI
+
+Update `CampaignCommunications.tsx` so `runResync(contactIdScope)` uses the selected thread's actual `contactId` instead of parsing `selectedThreadKey` with `split("::")`.
+
+This removes ambiguity when `conversationId` contains `::`.
+
+### 4. Add/repair backfill behavior for missed replies
+
+Improve the replay/backfill section in `check-email-replies` so recently skipped or unmatched messages can be reprocessed using the improved subject/contact/time logic.
+
+If the Graph inbox contains the current reply, a manual refresh should attach it immediately after deployment.
+
+### 5. Verify with logs and data
+
+After changes are approved and implemented:
+
+- Deploy/test `check-email-replies`.
+- Call it scoped to campaign `3676df53-a89f-4281-86cb-193b649c582e` and contact `f617dd33-46ca-4678-b670-fafc9612d1ca`.
+- Confirm a new `campaign_communications` row exists with:
+  - `sent_via = 'graph-sync'`
+  - `delivery_status = 'received'`
+  - `email_status = 'Replied'`
+  - body containing the contact reply text when Graph provides it.
+- Confirm the Monitoring tab shows `Replied 1` and the conversation shows 2 messages.
+
+## Files to change
+
+- `src/pages/CampaignDetail.tsx`
+  - Fix hook ordering for the auto-activate effect.
+
+- `src/components/campaigns/CampaignCommunications.tsx`
+  - Fix manual re-sync scoping to use selected thread/contact data directly.
+
+- `supabase/functions/check-email-replies/index.ts`
+  - Add safer subject/contact/time fallback matching and better replay/backfill logic.
+
+- `.lovable/plan.md`
+  - Update plan notes to document this reply-detection fix and the hook-order bug fix.
+
+## No database schema change planned
+
+The existing tables already support this fix:
+
+- `campaign_communications`
+- `email_reply_skip_log`
+- `campaign_unmatched_replies`
+
+No new migrations should be needed.
 ---
 
-### BATCH A — Phase 1 Finish + Bug Fixes (executes first)
+# Update — Reply detection fix (Apr 29)
 
-1. **`src/components/campaigns/CampaignRegion.tsx`** — In `persistRegions`, write all distinct countries comma-joined to `campaigns.country` (not just the first). Also normalize empty → `null`.
-2. **`src/hooks/useCampaigns.tsx`** — `cloneCampaign` must copy `enabled_channels` and rows from `campaign_materials`.
-3. **`src/components/campaigns/CampaignMessage.tsx`** — Accept `isReadOnly?: boolean` prop; disable Add/Edit/Delete/Duplicate/Generate-with-AI buttons when true. Replace any remaining `=== "Call"` checks with `=== "Phone"`.
-4. **`src/pages/CampaignDetail.tsx`** — Pass `isReadOnly={isCompleted}` to `CampaignMessage` and `CampaignAudienceTable`.
-5. **Toast standardization** — Convert `sonner` imports to `@/hooks/use-toast` in:
-   - `src/components/campaigns/EmailComposeModal.tsx`
-   - `src/components/campaigns/CampaignTiming.tsx`
-   - `src/components/campaigns/CampaignStrategy.tsx`
-6. **`src/components/campaigns/AIGenerateWizard.tsx`** — 
-   - Make phone-script `talking_points`, `discovery_questions`, `objection_handling` editable as line lists in the preview step.
-   - Add `linkedin-followup` to `KIND_OPTIONS`.
-   - Accept `selectedCountries`, `sampleIndustries`, `samplePositions` in `campaignContext` and forward to the edge function.
-7. **`src/components/campaigns/CampaignMessage.tsx`** — When opening the wizard, build and pass enriched context (countries from regions, top 5 industries from selected accounts, top 5 positions from selected contacts).
-8. **Delete dead files** after import audit: `src/components/campaigns/AIDraftEmailModal.tsx`, `supabase/functions/ai-draft-campaign-email/`. (Skip if anything still imports them.)
-
----
-
-### BATCH B — Phase 2 Outlook-style 2-Pane Monitoring
-
-9. **New `src/components/campaigns/email-monitor/ThreadList.tsx`** (~35% width) — Paginated thread cards: contact name, last message preview, status pill (sent/replied/bounced/needs-followup), unread dot, checkbox for bulk select.
-10. **New `src/components/campaigns/email-monitor/ThreadView.tsx`** (~65% width) — Header (contact + account + status), message timeline (oldest→newest), action bar: Reply / Reply All / Forward / Send Follow-up / Create Task / Mark as Replied.
-11. **Refactor `CampaignCommunications.tsx` Email tab** — Replace flat list with `<ResizablePanelGroup>` hosting ThreadList + ThreadView. Preserve existing thread-grouping logic.
-12. **Bulk action bar** — When ≥1 thread selected: Send Follow-up to selected / Mark as Replied / Export.
-13. **Orphan reply linker** — In ThreadList, group orphan replies under "Unmatched (N)" with "Link to thread…" picker.
-14. **Deep linking** — `?thread=<conversation_id>` selects + scrolls; selecting a thread updates URL via `setSearchParams`.
-15. **Responsive** — At <1024px, ThreadView becomes a `Sheet` overlay; ThreadList takes full width.
-
----
-
-### BATCH C — Phase 3 (Segments) + Phase 4 (Safety/Polish)
-
-16. **New `src/components/campaigns/AudienceSegmentManager.tsx`** — Lists `campaign_audience_segments` rows; "Add Segment" modal with filters (Role contains, Industry in, Country in, Position contains) + live count via query against `campaign_contacts` joined to `contacts`/`accounts`.
-17. **`CampaignAudienceTable.tsx`** — Above the toolbar, render segment chips (`All` + each segment); selecting one filters the visible rows by the segment's filter spec.
-18. **`CampaignMessage.tsx` template forms** — Add `region` (dropdown of campaign regions) + `segment_id` (dropdown of campaign segments) fields to email + LinkedIn template create/edit dialogs. Show region/segment badges on cards.
-19. **`EmailComposeModal.tsx`** — When a single contact is selected, auto-suggest the best template by matching `region` first, then `segment_id` (if contact matches segment filters); render a "Suggested" badge next to the picker.
-20. **`CampaignOverview.tsx`** — New "Template Performance" card: top 5 `campaign_email_templates` by reply rate (joins to `campaign_communications` for sent/replied counts).
-21. **Duplicate-send guard in `EmailComposeModal.tsx`** — Read `campaign_settings.duplicate_send_window_days` (default 3); before send, check if any selected contact received an email from this campaign within N days; show AlertDialog listing them with "Send Anyway / Skip Duplicates / Cancel".
-22. **Multi-touch consistency toast in `CampaignMessage.tsx`** — On mount, if any saved template has a `region` that no longer exists in `campaigns.country`, show a one-time warning toast with affected template names.
-23. **Cleanup** — `rg` audit then delete `src/components/campaigns/CampaignAccounts.tsx`, `CampaignContacts.tsx`, `CampaignAccountsContacts.tsx` if zero importers.
-
----
-
-### Out of Scope (acknowledged)
-- A/B variant authoring UI (DB exists but is a separate UX project)
-- Sequences/cadences multi-step builder (separate spec)
-- Daily send caps per user (requires settings page)
-- Unsubscribe/suppression list (requires public unsubscribe edge function + token)
-
-These will be proposed as Phase 5 after Batch C ships.
-
-### Files Modified Summary
-| Batch | Files |
-|---|---|
-| A | CampaignRegion, useCampaigns, CampaignMessage, CampaignDetail, EmailComposeModal, CampaignTiming, CampaignStrategy, AIGenerateWizard, (delete AIDraftEmailModal + edge fn) |
-| B | NEW: email-monitor/ThreadList, email-monitor/ThreadView. EDIT: CampaignCommunications |
-| C | NEW: AudienceSegmentManager. EDIT: CampaignAudienceTable, CampaignMessage, EmailComposeModal, CampaignOverview. DELETE: CampaignAccounts/Contacts/AccountsContacts (if unused) |
-
-After approval I'll execute Batch A → B → C sequentially, verifying each batch builds before moving to the next.
+- Fixed hook-order crash in `CampaignDetail` by hoisting the auto-activate `useEffect` above the early returns.
+- Strengthened `check-email-replies` so Gmail replies whose `conversationId` and threading headers are stripped are still picked up:
+  - Built a per-mailbox `contactEmail → recent outbounds` index and treat an inbound as relevant when the sender is a known campaign contact AND the subject is compatible with one of our recent outbounds (received after the outbound with ±2min skew).
+  - Widened the inner subject/contact/time rescue window to 7d back / 2min forward so post-send replies are not lost to a too-narrow ±10min window.
+- Fixed the manual re-sync contact scoping in `CampaignCommunications.tsx` to use the selected thread's actual `contactId` instead of splitting `selectedThreadKey` on `::`.

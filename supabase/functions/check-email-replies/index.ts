@@ -42,6 +42,40 @@ type SkipCounts = {
   no_parent: number;
 };
 
+/**
+ * Heuristic auto-reply / out-of-office / unsubscribe detection.
+ * Runs inline so we can mark the inbound row's `reply_intent` AND skip the
+ * stage promotion to "Responded" (a vacation autoresponder is not a real
+ * reply — promoting on it pollutes the funnel and triggers discovery-call
+ * action items for nobody).
+ *
+ * Patterns are case-insensitive and matched against subject + first 2KB of
+ * body. Pattern set is derived from RFC 3834 + common MTA headers.
+ */
+const AUTO_REPLY_SUBJECT_RE =
+  /\b(out of office|out-of-office|auto[-\s]?reply|automatic reply|automatische\s+antwort|abwesenheit|on vacation|away from office|i am out|i'?m out|currently away|delivery (status )?notification|undeliverable|mail delivery (failed|subsystem)|returned mail|postmaster)\b/i;
+
+const AUTO_REPLY_BODY_RE =
+  /\b(i am (currently )?out of (the )?office|i'?ll be (out|away)|currently on vacation|away from my desk|will be back on|return on \w+ \d|limited access to email|auto[-\s]?responder|this is an automatic|automatic email response)\b/i;
+
+const UNSUBSCRIBE_REQUEST_RE =
+  /\b(unsubscribe|opt[-\s]?out|remove me|stop emailing|please remove|don'?t (email|contact) me)\b/i;
+
+function classifyReplyHeuristic(subject: string | null, body: string | null): string | null {
+  const subj = (subject || "").trim();
+  const bodySample = (body || "").slice(0, 2048);
+  if (UNSUBSCRIBE_REQUEST_RE.test(subj) || UNSUBSCRIBE_REQUEST_RE.test(bodySample)) {
+    return "unsubscribe-request";
+  }
+  if (AUTO_REPLY_SUBJECT_RE.test(subj) || AUTO_REPLY_BODY_RE.test(bodySample)) {
+    return "auto-reply";
+  }
+  return null;
+}
+
+// reply_intent values that should NOT promote the contact's stage.
+const NON_PROMOTING_INTENTS = new Set(["auto-reply", "out_of_office", "unsubscribe-request"]);
+
 async function loadSenderMaps(supabase: any, sentEmails: SentEmailRecord[]) {
   const senderByMessageId = new Map<string, string>();
   const internetMessageIds = [...new Set(sentEmails.map((email) => email.internet_message_id).filter(Boolean))] as string[];
@@ -119,7 +153,7 @@ function resolveSenderMailbox(
 
 async function fetchInboxMessages(accessToken: string, mailbox: string, sinceISO: string): Promise<any[]> {
   const allMessages: any[] = [];
-  let nextLink: string | null = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/mailFolders/inbox/messages?$filter=receivedDateTime ge ${sinceISO}&$orderby=receivedDateTime desc&$top=50&$select=id,subject,from,toRecipients,receivedDateTime,internetMessageId,conversationId,bodyPreview,uniqueBody,body`;
+  let nextLink: string | null = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/messages?$filter=receivedDateTime ge ${sinceISO}&$orderby=receivedDateTime desc&$top=75&$select=id,subject,from,toRecipients,receivedDateTime,internetMessageId,conversationId,bodyPreview,uniqueBody,body,internetMessageHeaders,parentFolderId`;
 
   while (nextLink) {
     const resp: Response = await fetch(nextLink, {
@@ -139,6 +173,20 @@ async function fetchInboxMessages(accessToken: string, mailbox: string, sinceISO
   }
 
   return allMessages;
+}
+
+async function fetchMessageHeaders(accessToken: string, mailbox: string, messageId: string): Promise<any[]> {
+  try {
+    const resp = await fetch(
+      `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(mailbox)}/messages/${encodeURIComponent(messageId)}?$select=internetMessageHeaders`,
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+    );
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    return Array.isArray(data.internetMessageHeaders) ? data.internetMessageHeaders : [];
+  } catch {
+    return [];
+  }
 }
 
 export function extractReplyBody(msg: any): string {
@@ -219,6 +267,17 @@ Deno.serve(async (req) => {
     return new Response("ok", { headers: corsHeaders });
   }
 
+  // Cron auth: when CAMPAIGN_CRON_SECRET is set, require the matching header.
+  // Manual re-runs from the UI go through Supabase auth and don't need it.
+  const cronSecret = Deno.env.get("CAMPAIGN_CRON_SECRET");
+  const headerSecret = req.headers.get("x-cron-secret");
+  const hasUserAuth = !!req.headers.get("authorization");
+  if (cronSecret && !hasUserAuth && headerSecret !== cronSecret) {
+    return new Response(JSON.stringify({ error: "Forbidden" }), {
+      status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+
   const startedAt = Date.now();
   const supabaseUrl = Deno.env.get("SUPABASE_URL") || Deno.env.get("MY_SUPABASE_URL")!;
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || Deno.env.get("MY_SUPABASE_SERVICE_ROLE_KEY")!;
@@ -265,7 +324,8 @@ Deno.serve(async (req) => {
       .from("campaign_communications")
       .select("id, campaign_id, contact_id, account_id, conversation_id, internet_message_id, subject, owner, created_by, communication_date")
       .eq("communication_type", "Email")
-      .eq("sent_via", "azure")
+      .in("sent_via", ["azure", "sequence_runner"])
+      .eq("delivery_status", "sent")
       .not("conversation_id", "is", null)
       .gte("communication_date", sevenDaysAgo)
       .order("communication_date", { ascending: false });
@@ -305,13 +365,19 @@ Deno.serve(async (req) => {
       contact_email: email.contact_id ? (contactEmailById.get(email.contact_id) || null) : null,
     }));
 
-    const compositeKey = (convId: string, contactId: string | null) => `${convId}::${contactId || "no-contact"}`;
+    // Composite key includes campaign_id so a single conversation cloned
+    // across campaigns is still attributed correctly. Previously the key
+    // was just `convId::contactId`, which meant the same contact in two
+    // campaigns would have replies attributed to whichever bucket sorted
+    // first.
+    const compositeKey = (convId: string, contactId: string | null, campaignId: string | null) =>
+      `${convId}::${contactId || "no-contact"}::${campaignId || "no-campaign"}`;
     const bucketByCompositeKey = new Map<string, TrackableEmailRecord[]>();
     const bucketsByConvId = new Map<string, string[]>();
 
     for (const email of trackableEmails) {
       const convId = email.conversation_id!;
-      const key = compositeKey(convId, email.contact_id);
+      const key = compositeKey(convId, email.contact_id, email.campaign_id);
       if (!bucketByCompositeKey.has(key)) bucketByCompositeKey.set(key, []);
       bucketByCompositeKey.get(key)!.push(email);
       if (!bucketsByConvId.has(convId)) bucketsByConvId.set(convId, []);
@@ -327,19 +393,23 @@ Deno.serve(async (req) => {
       mailboxToConvIds.get(email.sender_mailbox)!.add(email.conversation_id!);
     }
 
+    // Per-mailbox `since` cursor: never look further back than the oldest
+    // tracked email in that mailbox. Saves Graph round-trips and avoids
+    // re-scanning thousands of irrelevant inbox messages every 5-min cron.
+    const mailboxSinceISO = new Map<string, string>();
+    for (const email of trackableEmails) {
+      if (!email.communication_date) continue;
+      const cur = mailboxSinceISO.get(email.sender_mailbox);
+      if (!cur || email.communication_date < cur) {
+        mailboxSinceISO.set(email.sender_mailbox, email.communication_date);
+      }
+    }
+
     const allInternetMsgIds = new Set(
       trackableEmails.map((email) => email.internet_message_id).filter(Boolean)
     );
 
-    const { data: existingSynced } = await supabase
-      .from("campaign_communications")
-      .select("internet_message_id")
-      .eq("sent_via", "graph-sync")
-      .not("internet_message_id", "is", null);
-
-    const existingSyncedIds = new Set(
-      (existingSynced || []).map((e: any) => e.internet_message_id).filter(Boolean)
-    );
+    const existingSyncedIds = new Set<string>();
 
     let totalRepliesFound = 0;
     let totalScanned = 0;
@@ -347,13 +417,73 @@ Deno.serve(async (req) => {
 
     for (const [mailbox, trackedConvIds] of mailboxToConvIds.entries()) {
       try {
-        console.log(`Fetching inbox for ${mailbox}, tracking ${trackedConvIds.size} conversations`);
-        const inboxMessages = await fetchInboxMessages(accessToken, mailbox, sevenDaysAgo);
+        // Use the older of (oldest tracked email - 1h grace) and sevenDaysAgo
+        // floor. The 1h grace covers replies that landed before the send row
+        // was committed (rare but possible with Graph webhook latency).
+        const oldest = mailboxSinceISO.get(mailbox) || sevenDaysAgo;
+        const oldestMs = new Date(oldest).getTime() - 60 * 60 * 1000;
+        const sinceISO = new Date(Math.max(oldestMs, new Date(sevenDaysAgo).getTime())).toISOString();
+        console.log(`Fetching inbox for ${mailbox}, tracking ${trackedConvIds.size} conversations, since=${sinceISO}`);
+        const inboxMessages = await fetchInboxMessages(accessToken, mailbox, sinceISO);
         console.log(`Got ${inboxMessages.length} inbox messages for ${mailbox}`);
 
-        const relevantMessages = inboxMessages.filter(
-          (msg: any) => msg.conversationId && trackedConvIds.has(msg.conversationId)
-        );
+        // Build a per-mailbox index of (contactEmail -> outbound subjects/dates)
+        // so we can include inbound messages from known campaign contacts even
+        // when conversationId was rotated and headers were stripped (Gmail
+        // cross-domain replies frequently hit this case).
+        const outboundsByContactEmail = new Map<string, Array<{ subject: string | null; date: string | null }>>();
+        for (const e of trackableEmails) {
+          if (e.sender_mailbox !== mailbox) continue;
+          if (!e.contact_email) continue;
+          const list = outboundsByContactEmail.get(e.contact_email) || [];
+          list.push({ subject: e.subject, date: e.communication_date });
+          outboundsByContactEmail.set(e.contact_email, list);
+        }
+
+        const relevantMessages: any[] = [];
+        for (const msg of inboxMessages) {
+          if (msg.conversationId && trackedConvIds.has(msg.conversationId)) {
+            relevantMessages.push(msg);
+            continue;
+          }
+            let headerList: any[] = Array.isArray(msg.internetMessageHeaders) ? msg.internetMessageHeaders : [];
+            if (headerList.length === 0 && msg.id) {
+              headerList = await fetchMessageHeaders(accessToken, mailbox, msg.id);
+              msg.internetMessageHeaders = headerList;
+            }
+            const headerVal = (name: string): string => {
+              const h = headerList.find((x: any) => (x?.name || "").toLowerCase() === name.toLowerCase());
+              return (h?.value || "").trim();
+            };
+            const ids = [
+              msg.inReplyTo || headerVal("In-Reply-To") || headerVal("x-In-Reply-To"),
+              ...String(headerVal("References") || headerVal("x-References") || "").split(/\s+/),
+            ].filter(Boolean);
+            if (ids.some((id) => allInternetMsgIds.has(id))) {
+              relevantMessages.push(msg);
+              continue;
+            }
+            // Final gate — sender matches a known campaign contact AND subject
+            // is compatible with one of our recent outbounds to that contact,
+            // received AFTER the outbound (with skew tolerance). This rescues
+            // Gmail replies that arrive with neither matching conversationId
+            // nor matching In-Reply-To headers.
+            const senderAddr = (msg.from?.emailAddress?.address || "").trim().toLowerCase();
+            if (senderAddr && outboundsByContactEmail.has(senderAddr)) {
+              const outs = outboundsByContactEmail.get(senderAddr)!;
+              const recvMs = new Date(msg.receivedDateTime || 0).getTime();
+              const SKEW_MS = 120_000;
+              const matched = outs.some((o) => {
+                const outMs = new Date(o.date || 0).getTime();
+                if (!outMs || outMs > recvMs + SKEW_MS) return false;
+                return areSubjectsCompatible(msg.subject || "", o.subject || "");
+              });
+              if (matched) {
+                relevantMessages.push(msg);
+                continue;
+              }
+            }
+        }
         console.log(`${relevantMessages.length} messages match tracked conversations for ${mailbox}`);
         totalScanned += relevantMessages.length;
 
@@ -362,14 +492,182 @@ Deno.serve(async (req) => {
           if (!msgInternetId) continue;
           if (allInternetMsgIds.has(msgInternetId)) continue;
           if (existingSyncedIds.has(msgInternetId)) continue;
+          const { data: alreadySynced } = await supabase
+            .from("campaign_communications")
+            .select("id")
+            .eq("sent_via", "graph-sync")
+            .eq("internet_message_id", msgInternetId)
+            .maybeSingle();
+          if (alreadySynced) {
+            existingSyncedIds.add(msgInternetId);
+            continue;
+          }
 
           const fromEmail = (msg.from?.emailAddress?.address || "").trim().toLowerCase();
           const fromName = msg.from?.emailAddress?.name || fromEmail;
           const receivedAt = msg.receivedDateTime || new Date().toISOString();
           if (!fromEmail || fromEmail === mailbox) continue;
 
-          const candidateBucketKeys = bucketsByConvId.get(msg.conversationId) || [];
-          if (candidateBucketKeys.length === 0) continue;
+          // === HEADER-FIRST THREADING (RFC 5322, industry standard) ===
+          // Standard `In-Reply-To` / `References` headers are what mail clients
+          // actually use for threading. Outlook's `conversationId` is internal
+          // and can be rotated by Gmail/Outlook bridges, so we trust headers
+          // first and fall back to conversationId.
+          let headerList: any[] = Array.isArray(msg.internetMessageHeaders) ? msg.internetMessageHeaders : [];
+          // Graph's $select on the list endpoint sometimes returns an empty
+          // headers array; re-fetch per-message to guarantee header-anchored
+          // matching always has a chance to succeed.
+          if (headerList.length === 0 && msg.id) {
+            try {
+              headerList = await fetchMessageHeaders(accessToken, mailbox, msg.id);
+              msg.internetMessageHeaders = headerList;
+            } catch (_) { /* non-fatal */ }
+          }
+          const headerVal = (name: string): string => {
+            const h = headerList.find((x: any) => (x?.name || "").toLowerCase() === name.toLowerCase());
+            return (h?.value || "").trim();
+          };
+          const inReplyTo = (msg.inReplyTo || headerVal("In-Reply-To") || headerVal("x-In-Reply-To") || "").trim();
+          const referencesRaw = (headerVal("References") || headerVal("x-References") || "").trim();
+          // Normalize: trim, ensure angle brackets, lowercase. Generate variants
+          // both with and without `<>` so the IN query matches either storage form.
+          const normalizeMsgId = (raw: string): string[] => {
+            const t = raw.trim();
+            if (!t) return [];
+            const stripped = t.replace(/^<|>$/g, "");
+            const wrapped = `<${stripped}>`;
+            return Array.from(new Set([t, stripped, wrapped]));
+          };
+          const rawIds = [inReplyTo, ...referencesRaw.split(/\s+/)].filter(Boolean);
+          const headerCandidateIds = Array.from(new Set(rawIds.flatMap(normalizeMsgId)));
+
+          let candidateBucketKeys: string[] = [];
+          // Track all reasons (header / rescue / bucket) we matched a parent —
+          // surfaced in logs and notes for forensics.
+          const matchReasons: string[] = [];
+          // RFC 5322 header-anchored parent — when present, this is the AUTHORITATIVE
+          // parent for chronology, even if the inbound's conversationId got rotated
+          // by Gmail/Outlook bridges (a common cause of false "chronology" skips).
+          let headerAnchoredParent: { id: string; conversation_id: string | null; communication_date: string | null; subject: string | null } | null = null;
+
+          // Step 1: header-based lookup against our outbound internet_message_id.
+          if (headerCandidateIds.length > 0) {
+            const { data: parentByHeader } = await supabase
+              .from("campaign_communications")
+              .select("id, conversation_id, contact_id, campaign_id, communication_date, subject")
+              .in("internet_message_id", headerCandidateIds)
+              .neq("sent_via", "graph-sync")
+              .order("communication_date", { ascending: true })
+              .limit(1);
+            const parent = (parentByHeader || [])[0];
+            if (parent?.conversation_id) {
+              candidateBucketKeys = bucketsByConvId.get(parent.conversation_id) || [];
+              headerAnchoredParent = {
+                id: parent.id,
+                conversation_id: parent.conversation_id,
+                communication_date: parent.communication_date || null,
+                subject: parent.subject || null,
+              };
+            }
+          }
+
+          // Step 1b: subject + contact + ±10min chronology rescue. When
+          // header-anchored lookup yields nothing (Gmail clients sometimes
+          // strip In-Reply-To on cross-domain replies, and Outlook's `x-`
+          // prefixed variants are ignored by most MUAs), fall back to a
+          // tight subject+contact+time-window match against our outbound rows.
+          if (!headerAnchoredParent && fromEmail) {
+            const receivedTimeMs = new Date(receivedAt).getTime();
+            // Wider window: replies can arrive seconds OR days after the
+            // outbound. Bound by 7d back / 2min forward (clock skew tolerance).
+            const windowStart = new Date(receivedTimeMs - 7 * 24 * 60 * 60 * 1000).toISOString();
+            const windowEnd = new Date(receivedTimeMs + 2 * 60 * 1000).toISOString();
+            // Find contacts matching the sender email (cheap; usually 0-2 rows).
+            const { data: contactsBySender } = await supabase
+              .from("contacts")
+              .select("id")
+              .ilike("email", fromEmail)
+              .limit(5);
+            const contactIdsForSender = (contactsBySender || []).map((c: any) => c.id);
+            if (contactIdsForSender.length > 0) {
+              const { data: chronoCandidates } = await supabase
+                .from("campaign_communications")
+                .select("id, conversation_id, contact_id, account_id, campaign_id, owner, created_by, internet_message_id, communication_date, subject")
+                .in("contact_id", contactIdsForSender)
+                .eq("communication_type", "Email")
+                .in("sent_via", ["azure", "sequence_runner"])
+                .gte("communication_date", windowStart)
+                .lte("communication_date", windowEnd)
+                .order("communication_date", { ascending: false })
+                .limit(10);
+              const compatible = (chronoCandidates || []).find((c: any) =>
+                areSubjectsCompatible(msg.subject, c.subject || ""),
+              );
+              if (compatible?.conversation_id) {
+                headerAnchoredParent = {
+                  id: compatible.id,
+                  conversation_id: compatible.conversation_id,
+                  communication_date: compatible.communication_date || null,
+                  subject: compatible.subject || null,
+                };
+                // Synthesize a bucket entry so downstream contact-match and
+                // chosenBucketSample logic works even when the parent's conv
+                // isn't tracked in this mailbox's bucket (the common case
+                // when Outlook rotates conversationId).
+                const synthKey = compositeKey(
+                  compatible.conversation_id,
+                  compatible.contact_id,
+                  compatible.campaign_id,
+                );
+                if (!bucketByCompositeKey.has(synthKey)) {
+                  // Resolve the contact's email so the downstream guard at
+                  // line ~740 doesn't reject this match as contact_mismatch.
+                  const contactEmailForRescue =
+                    contactEmailById.get(compatible.contact_id) || fromEmail;
+                  bucketByCompositeKey.set(synthKey, [
+                    {
+                      ...compatible,
+                      sender_mailbox: mailbox,
+                      contact_email: contactEmailForRescue,
+                    } as TrackableEmailRecord,
+                  ]);
+                }
+                candidateBucketKeys = [synthKey];
+                matchReasons.push("subject_chronology_rescue");
+              }
+            }
+          }
+
+          // Step 2: fall back to conversationId match.
+          if (candidateBucketKeys.length === 0) {
+            candidateBucketKeys = bucketsByConvId.get(msg.conversationId) || [];
+          }
+
+          if (candidateBucketKeys.length === 0) {
+            // Truly unmatched: inbound message to our mailbox in a conversation
+            // we don't track. Surface in the unmatched-replies queue so reps can
+            // map manually (industry-standard for outreach platforms).
+            try {
+              await supabase.from("campaign_unmatched_replies").upsert(
+                {
+                  received_at: receivedAt,
+                  from_email: fromEmail,
+                  from_name: fromName,
+                  subject: msg.subject || null,
+                  body_preview: (msg.bodyPreview || "").slice(0, 1000),
+                  internet_message_id: msgInternetId,
+                  in_reply_to: msg.inReplyTo || null,
+                  conversation_id: msg.conversationId || null,
+                  raw_payload: { source: "graph_inbox", mailbox },
+                  status: "pending",
+                },
+                { onConflict: "internet_message_id", ignoreDuplicates: true },
+              );
+            } catch (e) {
+              console.error("Failed to insert unmatched reply:", e);
+            }
+            continue;
+          }
 
           // === BOUNCE / NDR DETECTION ===
           // Microsoft Graph routes Non-Delivery Reports through the same conversationId
@@ -420,11 +718,34 @@ Deno.serve(async (req) => {
                   bounce_reason: (msg.bodyPreview || msg.subject || "").slice(0, 500),
                 })
                 .eq("id", parent.id);
+
+              // Auto-suppress the recipient (any bounce, per ops policy).
+              // Resolve the bounced recipient via the parent comm's contact_id.
+              const { data: parentContact } = await supabase
+                .from("campaign_communications")
+                .select("contact_id, campaign_id, contacts(email)")
+                .eq("id", parent.id)
+                .maybeSingle();
+              const bouncedEmail = (parentContact as any)?.contacts?.email?.toLowerCase();
+              if (bouncedEmail) {
+                await supabase
+                  .from("campaign_suppression_list")
+                  .upsert(
+                    {
+                      email: bouncedEmail,
+                      reason: "bounced",
+                      source: "auto_bounce_detection",
+                      campaign_id: parentContact?.campaign_id || null,
+                      contact_id: parentContact?.contact_id || null,
+                    },
+                    { onConflict: "email" },
+                  );
+              }
+
               existingSyncedIds.add(msgInternetId);
               allInternetMsgIds.add(msgInternetId);
-              console.log(`Bounce recorded for parent=${parent.id} type=${bounceType}`);
             } else {
-              console.log(`Bounce detected but no eligible sent parent in conv=${msg.conversationId}`);
+              // Bounce detected but no eligible sent parent — silent skip.
             }
             continue; // do not treat as a real reply
           }
@@ -432,7 +753,6 @@ Deno.serve(async (req) => {
 
           // 1. Strict match by contact email.
           let chosenKey: string | null = null;
-          const matchReasons: string[] = [];
           const matchedKeys: string[] = [];
           for (const key of candidateBucketKeys) {
             const bucket = bucketByCompositeKey.get(key) || [];
@@ -502,68 +822,109 @@ Deno.serve(async (req) => {
           const convEmails = bucketByCompositeKey.get(chosenKey) || [];
           const receivedTime = new Date(receivedAt).getTime();
 
-          // CHRONOLOGY GATE
-          const chronologicalParents = convEmails.filter((o) => {
-            const outTime = new Date(o.communication_date || 0).getTime();
-            return outTime <= receivedTime;
-          });
-
-          if (chronologicalParents.length === 0) {
-            skipCounts.chronology++;
-            const newest = convEmails
-              .slice()
-              .sort((a, b) => new Date(b.communication_date || 0).getTime() - new Date(a.communication_date || 0).getTime())[0];
-            await logSkip(supabase, "chronology", {
-              campaign_id: chosenBucketSample?.campaign_id || null,
-              contact_id: chosenBucketSample?.contact_id || null,
-              contact_email: chosenBucketSample?.contact_email || null,
-              sender_email: fromEmail,
-              subject: msg.subject || null,
-              conversation_id: msg.conversationId,
-              received_at: receivedAt,
-              parent_communication_id: newest?.id || null,
-              parent_subject: newest?.subject || null,
-              parent_sent_at: newest?.communication_date || null,
-              correlation_id: correlationId,
-              details: { reason: "reply received before any outbound in bucket", bucket_size: convEmails.length },
-            });
-            continue;
+          // === HEADER-ANCHORED FAST PATH (AUTHORITATIVE) ===
+          // If In-Reply-To / References pointed at one of our outbound emails,
+          // OR the subject+contact+time-window rescue found a parent, treat
+          // THAT specific email as the parent — bypass the bucket-based
+          // chronology gate entirely. Bucket chronology produces false
+          // negatives whenever Gmail/Outlook bridges rotate the conversationId
+          // on cross-domain replies (the parent ends up in a different bucket
+          // than the inbound). The header/rescue match is more reliable than
+          // bucket membership.
+          let originalEmail: any = null;
+          // 120-second clock-skew tolerance: Outlook's `receivedDateTime` is
+          // sometimes recorded slightly before our DB writes the outbound's
+          // `communication_date` (the post-send insert is async, and Graph
+          // processing can drift under load).
+          const SKEW_MS = 120_000;
+          if (
+            headerAnchoredParent &&
+            headerAnchoredParent.communication_date &&
+            new Date(headerAnchoredParent.communication_date).getTime() <= receivedTime + SKEW_MS &&
+            areSubjectsCompatible(msg.subject, headerAnchoredParent.subject)
+          ) {
+            // Re-load the full row from convEmails if it's in our bucket; else
+            // fetch a complete parent row so we have campaign_id, contact_id,
+            // account_id, owner, created_by, internet_message_id for the
+            // insert below. Synthesizing the parent makes the header/rescue
+            // match independent of the inbound's conversationId bucket.
+            const inBucket = convEmails.find((o) => o.id === headerAnchoredParent!.id);
+            if (inBucket) {
+              originalEmail = inBucket;
+            } else {
+              const { data: fullParent } = await supabase
+                .from("campaign_communications")
+                .select("id, campaign_id, contact_id, account_id, owner, created_by, subject, internet_message_id, communication_date")
+                .eq("id", headerAnchoredParent.id)
+                .maybeSingle();
+              if (fullParent) originalEmail = fullParent;
+            }
           }
 
-          // SUBJECT COMPATIBILITY GATE
-          const eligibleParents = chronologicalParents.filter((o) =>
-            areSubjectsCompatible(msg.subject, o.subject),
-          );
-
-          if (eligibleParents.length === 0) {
-            skipCounts.subject_mismatch++;
-            const newestChrono = chronologicalParents
-              .slice()
-              .sort((a, b) => new Date(b.communication_date || 0).getTime() - new Date(a.communication_date || 0).getTime())[0];
-            await logSkip(supabase, "subject_mismatch", {
-              campaign_id: chosenBucketSample?.campaign_id || null,
-              contact_id: chosenBucketSample?.contact_id || null,
-              contact_email: chosenBucketSample?.contact_email || null,
-              sender_email: fromEmail,
-              subject: msg.subject || null,
-              conversation_id: msg.conversationId,
-              received_at: receivedAt,
-              parent_communication_id: newestChrono?.id || null,
-              parent_subject: newestChrono?.subject || null,
-              parent_sent_at: newestChrono?.communication_date || null,
-              correlation_id: correlationId,
-              details: {
-                considered_parents: chronologicalParents.map((p) => ({
-                  id: p.id, subject: p.subject, sent_at: p.communication_date,
-                })),
-              },
+          if (!originalEmail) {
+            // CHRONOLOGY GATE (bucket-based fallback) — also tolerant to 60s skew.
+            const chronologicalParents = convEmails.filter((o) => {
+              const outTime = new Date(o.communication_date || 0).getTime();
+              return outTime <= receivedTime + SKEW_MS;
             });
-            continue;
-          }
 
-          const originalEmail = eligibleParents.sort(
-            (a, b) => new Date(b.communication_date || 0).getTime() - new Date(a.communication_date || 0).getTime(),
-          )[0];
+            if (chronologicalParents.length === 0) {
+              skipCounts.chronology++;
+              const newest = convEmails
+                .slice()
+                .sort((a, b) => new Date(b.communication_date || 0).getTime() - new Date(a.communication_date || 0).getTime())[0];
+              await logSkip(supabase, "chronology", {
+                campaign_id: chosenBucketSample?.campaign_id || null,
+                contact_id: chosenBucketSample?.contact_id || null,
+                contact_email: chosenBucketSample?.contact_email || null,
+                sender_email: fromEmail,
+                subject: msg.subject || null,
+                conversation_id: msg.conversationId,
+                received_at: receivedAt,
+                parent_communication_id: newest?.id || null,
+                parent_subject: newest?.subject || null,
+                parent_sent_at: newest?.communication_date || null,
+                correlation_id: correlationId,
+                details: { reason: "reply received before any outbound in bucket", bucket_size: convEmails.length },
+              });
+              continue;
+            }
+
+            // SUBJECT COMPATIBILITY GATE
+            const eligibleParents = chronologicalParents.filter((o) =>
+              areSubjectsCompatible(msg.subject, o.subject),
+            );
+
+            if (eligibleParents.length === 0) {
+              skipCounts.subject_mismatch++;
+              const newestChrono = chronologicalParents
+                .slice()
+                .sort((a, b) => new Date(b.communication_date || 0).getTime() - new Date(a.communication_date || 0).getTime())[0];
+              await logSkip(supabase, "subject_mismatch", {
+                campaign_id: chosenBucketSample?.campaign_id || null,
+                contact_id: chosenBucketSample?.contact_id || null,
+                contact_email: chosenBucketSample?.contact_email || null,
+                sender_email: fromEmail,
+                subject: msg.subject || null,
+                conversation_id: msg.conversationId,
+                received_at: receivedAt,
+                parent_communication_id: newestChrono?.id || null,
+                parent_subject: newestChrono?.subject || null,
+                parent_sent_at: newestChrono?.communication_date || null,
+                correlation_id: correlationId,
+                details: {
+                  considered_parents: chronologicalParents.map((p) => ({
+                    id: p.id, subject: p.subject, sent_at: p.communication_date,
+                  })),
+                },
+              });
+              continue;
+            }
+
+            originalEmail = eligibleParents.sort(
+              (a, b) => new Date(b.communication_date || 0).getTime() - new Date(a.communication_date || 0).getTime(),
+            )[0];
+          }
 
           if (!originalEmail) {
             skipCounts.no_parent++;
@@ -588,6 +949,10 @@ Deno.serve(async (req) => {
           );
 
           const cleanBody = extractReplyBody(msg);
+          // Inline heuristic so we can store reply_intent at insert time and
+          // gate stage promotion below. Async classify-reply-intent may
+          // refine this later.
+          const heuristicIntent = classifyReplyHeuristic(msg.subject, cleanBody || msg.bodyPreview || null);
 
           const { error: insertErr } = await supabase
             .from("campaign_communications")
@@ -606,7 +971,8 @@ Deno.serve(async (req) => {
               parent_id: originalEmail.id,
               owner: originalEmail.owner,
               created_by: originalEmail.created_by,
-              notes: `Reply from ${fromName} (${fromEmail})${correlationId ? ` [correlation:${correlationId}]` : ""}`,
+              reply_intent: heuristicIntent,
+              notes: `Reply from ${fromName} (${fromEmail})${correlationId ? ` [correlation:${correlationId}]` : ""}${heuristicIntent ? ` [intent:${heuristicIntent}]` : ""}`,
               communication_date: receivedAt,
             });
 
@@ -669,24 +1035,34 @@ Deno.serve(async (req) => {
           }
 
           if (originalEmail.contact_id) {
-            const { data: cc } = await supabase
-              .from("campaign_contacts")
-              .select("stage")
-              .eq("campaign_id", originalEmail.campaign_id)
-              .eq("contact_id", originalEmail.contact_id)
-              .single();
-
-            const stageRanks: Record<string, number> = {
-              "Not Contacted": 0, "Email Sent": 1, "Phone Contacted": 2,
-              "LinkedIn Contacted": 3, "Responded": 4, "Qualified": 5,
-            };
-            const currentRank = stageRanks[cc?.stage || "Not Contacted"] ?? 0;
-            if (stageRanks["Responded"] > currentRank) {
-              await supabase
+            // Skip stage promotion when the inbound is a vacation
+            // autoresponder, OOO bounce, or unsubscribe request — none of
+            // these represent a genuine human reply and promoting on them
+            // pollutes the funnel.
+            if (heuristicIntent && NON_PROMOTING_INTENTS.has(heuristicIntent)) {
+              console.log(
+                `Skip stage promotion for contact=${originalEmail.contact_id}: intent=${heuristicIntent}`,
+              );
+            } else {
+              const { data: cc } = await supabase
                 .from("campaign_contacts")
-                .update({ stage: "Responded" })
+                .select("stage")
                 .eq("campaign_id", originalEmail.campaign_id)
-                .eq("contact_id", originalEmail.contact_id);
+                .eq("contact_id", originalEmail.contact_id)
+                .single();
+
+              const stageRanks: Record<string, number> = {
+                "Not Contacted": 0, "Email Sent": 1, "Phone Contacted": 2,
+                "LinkedIn Contacted": 3, "Responded": 4, "Qualified": 5,
+              };
+              const currentRank = stageRanks[cc?.stage || "Not Contacted"] ?? 0;
+              if (stageRanks["Responded"] > currentRank) {
+                await supabase
+                  .from("campaign_contacts")
+                  .update({ stage: "Responded" })
+                  .eq("campaign_id", originalEmail.campaign_id)
+                  .eq("contact_id", originalEmail.contact_id);
+              }
             }
           }
 
@@ -715,6 +1091,98 @@ Deno.serve(async (req) => {
       } catch (mbErr) {
         console.error(`Error processing mailbox ${mailbox}:`, mbErr);
       }
+    }
+
+    // === REPLAY: chronology-skipped rows from the last 24h ===
+    // The earlier matcher run may have skipped a real reply because the
+    // parent's conversationId got rotated by Outlook. With the now-improved
+    // header/rescue logic, re-attempt every chronology skip from the last
+    // 24h. Idempotent: existing inserts are skipped via the `internet_message_id`
+    // dedupe in `campaign_communications`.
+    let replayMatched = 0;
+    try {
+      const replayCutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+      const { data: skipped } = await supabase
+        .from("email_reply_skip_log")
+        .select("id, contact_email, sender_email, subject, conversation_id, received_at, parent_subject, details")
+        .eq("skip_reason", "chronology")
+        .gte("created_at", replayCutoff)
+        .order("created_at", { ascending: false })
+        .limit(50);
+
+      for (const row of skipped || []) {
+        if (!row.received_at || !row.sender_email) continue;
+        // De-dupe by conversation_id+received_at — once a reply lands, skip.
+        const { data: alreadyInserted } = await supabase
+          .from("campaign_communications")
+          .select("id")
+          .eq("sent_via", "graph-sync")
+          .eq("conversation_id", row.conversation_id)
+          .eq("communication_date", row.received_at)
+          .maybeSingle();
+        if (alreadyInserted) continue;
+
+        const receivedMs = new Date(row.received_at).getTime();
+        const windowStart = new Date(receivedMs - 10 * 60 * 1000).toISOString();
+        const windowEnd = new Date(receivedMs + 60 * 1000).toISOString();
+        const { data: senderContacts } = await supabase
+          .from("contacts")
+          .select("id")
+          .ilike("email", row.sender_email.toLowerCase())
+          .limit(5);
+        const cIds = (senderContacts || []).map((c: any) => c.id);
+        if (cIds.length === 0) continue;
+
+        const { data: cands } = await supabase
+          .from("campaign_communications")
+          .select("id, campaign_id, contact_id, account_id, owner, created_by, subject, internet_message_id, communication_date, conversation_id")
+          .in("contact_id", cIds)
+          .eq("communication_type", "Email")
+          .in("sent_via", ["azure", "sequence_runner"])
+          .gte("communication_date", windowStart)
+          .lte("communication_date", windowEnd)
+          .order("communication_date", { ascending: false })
+          .limit(10);
+        const parent = (cands || []).find((c: any) =>
+          areSubjectsCompatible(row.subject, c.subject || ""),
+        );
+        if (!parent) continue;
+
+        const { error: insertErr } = await supabase
+          .from("campaign_communications")
+          .insert({
+            campaign_id: parent.campaign_id,
+            contact_id: parent.contact_id,
+            account_id: parent.account_id || null,
+            communication_type: "Email",
+            subject: row.subject || `Re: ${parent.subject || ""}`,
+            body: null,
+            email_status: "Replied",
+            delivery_status: "received",
+            sent_via: "graph-sync",
+            conversation_id: row.conversation_id,
+            parent_id: parent.id,
+            owner: parent.owner,
+            created_by: parent.created_by,
+            notes: `Reply from ${row.sender_email} [replay:subject_chronology_rescue]`,
+            communication_date: row.received_at,
+          });
+        if (insertErr) {
+          console.error(`Replay insert failed for skip ${row.id}:`, insertErr);
+          continue;
+        }
+        await supabase
+          .from("campaign_communications")
+          .update({ email_status: "Replied" })
+          .eq("id", parent.id);
+        replayMatched++;
+      }
+      if (replayMatched > 0) {
+        console.log(`Replay rescued ${replayMatched} previously-skipped replies`);
+        totalRepliesFound += replayMatched;
+      }
+    } catch (replayErr) {
+      console.error("Replay step failed:", replayErr);
     }
 
     const totalSkipped =
