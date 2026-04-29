@@ -367,13 +367,22 @@ Deno.serve(async (req) => {
       const { data: freqResult } = await supabaseClient.rpc("check_contact_frequency_cap", {
         _contact_id: payload.contact_id,
       });
-      const allowed = (freqResult as any)?.allowed;
-      if (freqResult && allowed === false) {
+      const fr = freqResult as any;
+      const allowed = fr?.allowed;
+      if (fr && allowed === false) {
+        const used1h = fr.used_1h ?? fr.recent_count_1h;
+        const limit1h = fr.limit_1h;
+        const used24h = fr.used_24h ?? fr.recent_count_24h ?? fr.recent_count;
+        const limit24h = fr.limit_24h ?? fr.limit;
+        const parts: string[] = [];
+        if (used1h != null && limit1h != null) parts.push(`${used1h}/${limit1h} in the last 1h`);
+        if (used24h != null && limit24h != null) parts.push(`${used24h}/${limit24h} in the last 24h`);
+        const detail = parts.length ? ` (${parts.join(", ")})` : "";
         return new Response(JSON.stringify({
           success: false,
-          error: `Frequency cap reached for this contact (${(freqResult as any)?.recent_count ?? "?"}/${(freqResult as any)?.limit ?? "?"} in the last ${(freqResult as any)?.window_hours ?? "?"}h across all campaigns).`,
+          error: `Frequency cap reached for this contact${detail} across all campaigns. Try again later or remove the contact from other active campaigns.`,
           errorCode: "FREQUENCY_CAP_EXCEEDED",
-          frequencyDetails: freqResult,
+          frequencyDetails: fr,
         }), {
           status: 429,
           headers: { ...corsHeaders, "Content-Type": "application/json" },
