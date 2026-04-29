@@ -855,9 +855,12 @@ export function EmailComposeModal({ open, onOpenChange, campaignId, contacts: co
         } else {
           failCount++;
           const isFreqCap = payload?.errorCode === "FREQUENCY_CAP_EXCEEDED";
+          const isReplyBroken = payload?.errorCode === "REPLY_THREADING_BROKEN";
           const msg = isFreqCap
             ? "Skipped — recipient hit the cross-campaign frequency cap (anti-fatigue guard)."
-            : payload?.error || payload?.errorCode || "Unknown error";
+            : isReplyBroken
+              ? "Reply threading unavailable — see toast for next steps."
+              : payload?.error || payload?.errorCode || "Unknown error";
           setSendResults(prev =>
             prev.map(r => r.contactId === c.contact_id ? { ...r, status: "failed", error: msg } : r)
           );
@@ -867,6 +870,16 @@ export function EmailComposeModal({ open, onOpenChange, campaignId, contacts: co
               description: payload?.error,
               variant: "destructive",
               duration: 4000,
+            });
+          }
+          if (isReplyBroken) {
+            toast({
+              title: "Reply couldn't be threaded",
+              description:
+                "Microsoft Graph denied the reply (Mail.Send permission missing for this mailbox, or the original message can't be located). " +
+                "Ask your admin to grant Mail.Send for this mailbox, or close this dialog and send as a new email instead.",
+              variant: "destructive",
+              duration: 8000,
             });
           }
           // Campaign is no longer active — abort the rest of the batch instantly

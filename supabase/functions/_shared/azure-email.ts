@@ -426,12 +426,17 @@ export async function sendEmailViaGraph(
     // sendMail with x-prefixed headers — that path produces an unthreaded
     // message Gmail/Outlook will treat as a new conversation. Hard-fail so
     // the UI can surface it instead of silently breaking threading.
+    // Use errorCode=ErrorAccessDenied so the caller's shared-mailbox fallback
+    // path is triggered (the same way it is for new sends), giving the
+    // operator one more chance before failing the row.
     return {
       success: false,
       error:
-        "Reply threading unavailable: Graph createReply failed against both the parent's mailbox and the sender mailbox. " +
-        "The recipient would receive this as a new thread. Please retry, or send as a fresh email.",
-      errorCode: "REPLY_THREADING_BROKEN",
+        "Reply threading unavailable: Microsoft Graph denied createReply against the parent's mailbox and the sender mailbox (HTTP 403). " +
+        "This usually means the Azure app registration is missing the 'Mail.Send' Application permission (with admin consent) for this user mailbox, " +
+        "or the Application Access Policy doesn't include this mailbox. Ask your tenant admin to grant Mail.Send to the app for this mailbox, " +
+        "or send as a fresh email (not a reply) to bypass threading.",
+      errorCode: "ErrorAccessDenied",
       sentAsUser: false,
     };
   }
@@ -444,7 +449,8 @@ export async function sendEmailViaGraph(
       success: false,
       error:
         "Reply threading unavailable: could not resolve the original message in Microsoft Graph to build a true reply. " +
-        "Sending as a new thread would break the conversation. Please retry in a moment, or send as a fresh email.",
+        "This usually happens when the original send's Sent Items metadata wasn't captured. " +
+        "Please retry in a moment, or send as a fresh email (not a reply).",
       errorCode: "REPLY_THREADING_BROKEN",
       sentAsUser: false,
     };
