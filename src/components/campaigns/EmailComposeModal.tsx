@@ -854,10 +854,21 @@ export function EmailComposeModal({ open, onOpenChange, campaignId, contacts: co
           onEmailSent(c.contact_id);
         } else {
           failCount++;
-          const msg = payload?.error || payload?.errorCode || "Unknown error";
+          const isFreqCap = payload?.errorCode === "FREQUENCY_CAP_EXCEEDED";
+          const msg = isFreqCap
+            ? "Skipped — recipient hit the cross-campaign frequency cap (anti-fatigue guard)."
+            : payload?.error || payload?.errorCode || "Unknown error";
           setSendResults(prev =>
             prev.map(r => r.contactId === c.contact_id ? { ...r, status: "failed", error: msg } : r)
           );
+          if (isFreqCap) {
+            toast({
+              title: "Recipient skipped — frequency cap reached",
+              description: payload?.error,
+              variant: "destructive",
+              duration: 4000,
+            });
+          }
           // Campaign is no longer active — abort the rest of the batch instantly
           // so we don't hammer the function with the same blocking error.
           if (payload?.errorCode === "CAMPAIGN_NOT_ACTIVE") {
